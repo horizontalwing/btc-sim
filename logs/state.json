@@ -1,0 +1,15 @@
+{
+  "price_history": [
+    12539487
+  ],
+  "grid_last_price": 12539487,
+  "grid_pnl": 0,
+  "grid_position": 0,
+  "ma_position": 0,
+  "ma_pnl": 0,
+  "ma_entry_price": null,
+  "combined_position": 0,
+  "combined_pnl": 0,
+  "combined_entry_price": null,
+  "stopped": false
+}

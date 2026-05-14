@@ -1,0 +1,4 @@
+timestamp,btc_price_jpy,strategy,signal,simulated_action,simulated_qty_btc,cumulative_pnl_jpy,ma_short,ma_long,notes
+2026-05-14 10:44:22,12539487,grid,hold,none,0,0,,,初回実行: ベースライン記録
+2026-05-14 10:44:22,12539487,ma,hold,none,0,0,,,MA計算中（データ蓄積待ち）
+2026-05-14 10:44:22,12539487,combined,hold,none,0,0,,,MA計算中（データ蓄積待ち）
