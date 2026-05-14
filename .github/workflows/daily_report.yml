@@ -1,0 +1,27 @@
+name: Daily Report
+
+on:
+  schedule:
+    - cron: '0 0 * * *'   # JST 9:00 に毎日実行
+  workflow_dispatch:        # 手動実行も可能
+
+jobs:
+  report:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+      - name: リポジトリをチェックアウト
+        uses: actions/checkout@v4
+
+      - name: Pythonをセットアップ
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: 日次レポートを送信
+        env:
+          GMAIL_ADDRESS:  ${{ secrets.GMAIL_ADDRESS }}
+          GMAIL_PASSWORD: ${{ secrets.GMAIL_PASSWORD }}
+        run: python src/daily_report.py
