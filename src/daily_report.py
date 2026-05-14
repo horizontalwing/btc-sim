@@ -19,6 +19,7 @@ STATE_FILE  = "logs/state.json"
 
 GMAIL_ADDRESS  = os.environ["GMAIL_ADDRESS"]
 GMAIL_PASSWORD = os.environ["GMAIL_PASSWORD"]
+REPORT_EMAIL   = os.environ["REPORT_EMAIL"]
 
 JST = timezone(timedelta(hours=9))
 
@@ -175,7 +176,7 @@ def send_email(subject, html_body):
     msg = MIMEMultipart("alternative")
     msg["Subject"] = subject
     msg["From"]    = GMAIL_ADDRESS
-    msg["To"]      = GMAIL_ADDRESS
+    msg["To"]      = REPORT_EMAIL
     msg.attach(MIMEText(html_body, "html", "utf-8"))
 
     with smtplib.SMTP_SSL("smtp.gmail.com", 465) as smtp:
