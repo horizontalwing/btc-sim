@@ -2,3 +2,6 @@ timestamp,btc_price_jpy,strategy,signal,simulated_action,simulated_qty_btc,cumul
 2026-05-14 10:44:22,12539487,grid,hold,none,0,0,,,初回実行: ベースライン記録
 2026-05-14 10:44:22,12539487,ma,hold,none,0,0,,,MA計算中（データ蓄積待ち）
 2026-05-14 10:44:22,12539487,combined,hold,none,0,0,,,MA計算中（データ蓄積待ち）
+2026-05-14 15:22:22,12602069,grid,hold,none,0,0,,,"待機: 前回12,539,487円 現在12,602,069円（差+62,582円）"
+2026-05-14 15:22:22,12602069,ma,hold,none,0,0,,,MA計算中（データ蓄積待ち）
+2026-05-14 15:22:22,12602069,combined,hold,none,0,0,,,MA計算中（データ蓄積待ち）
