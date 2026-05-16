@@ -146,6 +146,8 @@ def strategy_grid(price, state, ts):
 
     else:
         notes = f"待機: 前回{last:,}円 現在{price:,}円（差{diff:+,}円）"
+        # 待機時も基準価格を更新（次回との差分を正しく計算するため）
+        state["grid_last_price"] = price
 
     return signal, action, qty, state, notes
 
@@ -238,6 +240,8 @@ def strategy_combined(price, ma_short, ma_long, state, ts):
 
     else:
         notes = f"レンジ相場・待機: MA乖離{diff_pct*100:.2f}% 差{diff:+,}円"
+        # 待機時も基準価格を更新
+        state["combined_last_price"] = price
 
     return signal, action, qty, state, notes
 
