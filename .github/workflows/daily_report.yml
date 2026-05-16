@@ -24,4 +24,5 @@ jobs:
         env:
           GMAIL_ADDRESS:  ${{ secrets.GMAIL_ADDRESS }}
           GMAIL_PASSWORD: ${{ secrets.GMAIL_PASSWORD }}
+          REPORT_EMAIL:   ${{ secrets.REPORT_EMAIL }}
         run: python src/daily_report.py
