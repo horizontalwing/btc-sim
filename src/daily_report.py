@@ -19,7 +19,6 @@ STATE_FILE  = "logs/state.json"
 
 GMAIL_ADDRESS  = os.environ["GMAIL_ADDRESS"]
 GMAIL_PASSWORD = os.environ["GMAIL_PASSWORD"]
-REPORT_EMAIL   = os.environ["REPORT_EMAIL"]
 
 JST = timezone(timedelta(hours=9))
 
@@ -99,6 +98,70 @@ def format_signal_rows(signals):
     </table>"""
 
 
+def build_price_chart(all_rows):
+    """直近4回分（約24時間）の価格推移をHTMLバーチャートで返す"""
+    # strategyがgridの行だけ使う（3戦略で重複するため）
+    grid_rows = [r for r in all_rows if r["strategy"] == "grid"]
+    recent = grid_rows[-4:] if len(grid_rows) >= 4 else grid_rows
+
+    if not recent:
+        return "<p style='color:#888'>データ不足</p>"
+
+    prices = [int(r["btc_price_jpy"]) for r in recent]
+    times  = [r["timestamp"][5:16] for r in recent]  # MM-DD HH:MM
+
+    min_p  = min(prices)
+    max_p  = max(prices)
+    rng    = max_p - min_p if max_p != min_p else 1
+
+    first_price = prices[0]
+
+    rows_html = ""
+    for i, (t, p) in enumerate(zip(times, prices)):
+        bar_pct  = int((p - min_p) / rng * 80) + 10  # 10〜90%
+        change   = p - first_price
+        sign     = "+" if change >= 0 else ""
+        chg_color = "#2ecc71" if change >= 0 else "#e74c3c"
+
+        # 最高値・最安値ラベル
+        tag = ""
+        if p == max_p:
+            tag = "<span style='font-size:10px;color:#e74c3c;margin-left:4px'>▲ 高値</span>"
+        elif p == min_p:
+            tag = "<span style='font-size:10px;color:#3498db;margin-left:4px'>▼ 安値</span>"
+
+        rows_html += f"""
+        <tr>
+          <td style='padding:4px 8px 4px 0;font-size:12px;color:#888;white-space:nowrap'>{t}</td>
+          <td style='padding:4px;width:100%'>
+            <div style='background:#f0f0f0;border-radius:4px;height:18px;position:relative'>
+              <div style='background:linear-gradient(90deg,#3498db,#2980b9);
+                          width:{bar_pct}%;height:100%;border-radius:4px'></div>
+            </div>
+          </td>
+          <td style='padding:4px 0 4px 8px;font-size:12px;white-space:nowrap;text-align:right'>
+            {p:,}円{tag}
+          </td>
+          <td style='padding:4px 0 4px 8px;font-size:11px;color:{chg_color};white-space:nowrap'>
+            {sign}{change:,}
+          </td>
+        </tr>"""
+
+    # 変動幅サマリー
+    total_change = prices[-1] - prices[0]
+    total_sign   = "+" if total_change >= 0 else ""
+    total_color  = "#2ecc71" if total_change >= 0 else "#e74c3c"
+
+    return f"""
+    <table style='width:100%;border-collapse:collapse'>
+      {rows_html}
+    </table>
+    <div style='margin-top:8px;font-size:12px;color:{total_color}'>
+      24時間変動: <strong>{total_sign}{total_change:,}円</strong>
+      （{total_sign}{total_change/prices[0]*100:.2f}%）
+    </div>"""
+
+
 def build_html(date_str, summary, state, all_rows):
     """HTMLメール本文を組み立てる"""
 
@@ -158,6 +221,9 @@ def build_html(date_str, summary, state, all_rows):
       </tr>
     </table>
 
+    <h3 style='margin:24px 0 8px;font-size:15px'>直近24時間の価格推移</h3>
+    {build_price_chart(all_rows)}
+
     <h3 style='margin:24px 0 8px;font-size:15px'>本日のシグナル詳細</h3>
     {strategy_sections}
 
@@ -176,7 +242,7 @@ def send_email(subject, html_body):
     msg = MIMEMultipart("alternative")
     msg["Subject"] = subject
     msg["From"]    = GMAIL_ADDRESS
-    msg["To"]      = REPORT_EMAIL
+    msg["To"]      = GMAIL_ADDRESS
     msg.attach(MIMEText(html_body, "html", "utf-8"))
 
     with smtplib.SMTP_SSL("smtp.gmail.com", 465) as smtp:
