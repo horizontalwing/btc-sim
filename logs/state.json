@@ -37,17 +37,18 @@
     12323359,
     12330080,
     12309278,
-    12254283
+    12254283,
+    12080816
   ],
-  "grid_last_price": 12254283,
+  "grid_last_price": 12080816,
   "grid_pnl": 0,
   "grid_position": 0,
-  "ma_position": 1,
-  "ma_pnl": -12331.367,
-  "ma_entry_price": 12331367,
+  "ma_position": 0,
+  "ma_pnl": -250.55099999999948,
+  "ma_entry_price": null,
   "combined_position": 0,
   "combined_pnl": 0,
   "combined_entry_price": null,
   "stopped": false,
-  "combined_last_price": 12254283
+  "combined_last_price": 12080816
 }
