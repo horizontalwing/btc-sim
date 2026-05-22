@@ -1,6 +1,6 @@
 """
 BTC自動売買シミュレーター
-- CoinGecko APIからBTC価格を取得
+- GMOコイン Public APIからBTC価格を取得
 - 3戦略（グリッド・移動平均・複合）を同時シミュレーション
 - 結果をCSVログに追記
 """
@@ -44,12 +44,13 @@ def get_jst_now():
 
 
 def fetch_btc_price():
-    """CoinGecko APIからBTC価格（円）を取得"""
-    url = "https://api.coingecko.com/api/v3/simple/price?ids=bitcoin&vs_currencies=jpy"
+    """GMOコイン Public APIからBTC価格（円）を取得"""
+    url = "https://api.coin.z.com/public/v1/ticker?symbol=BTC"
     try:
         with urllib.request.urlopen(url, timeout=10) as res:
             data = json.loads(res.read())
-            return int(data["bitcoin"]["jpy"])
+            # lastが最終取引価格
+            return int(float(data["data"][0]["last"]))
     except Exception as e:
         raise RuntimeError(f"価格取得失敗: {e}")
 
