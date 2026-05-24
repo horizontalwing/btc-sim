@@ -66,6 +66,7 @@ def load_state():
             "ma_position": 0,           # MA: ポジション（1=買い, 0=なし）
             "ma_pnl": 0,                # MA: 累計損益
             "ma_entry_price": None,     # MA: エントリー価格
+            "combined_last_price": None,  # 複合: グリッド基準価格
             "combined_position": 0,     # 複合: ポジション
             "combined_pnl": 0,          # 複合: 累計損益
             "combined_entry_price": None,
@@ -104,6 +105,13 @@ def calc_ma(prices, period):
     return sum(prices[-period:]) / period
 
 
+def format_ma_for_log(ma_value):
+    """MA値をログ用にフォーマット（None時は空文字列）"""
+    if ma_value is None:
+        return ""
+    return round(ma_value)
+
+
 # ── 戦略ロジック ─────────────────────────────────────────
 
 def strategy_grid(price, state, ts):
@@ -131,7 +139,7 @@ def strategy_grid(price, state, ts):
         cost   = price * qty
         state["grid_pnl"]      -= cost   # 買いコスト
         state["grid_position"] += qty
-        state["grid_last_price"] = price
+        state["grid_last_price"] = price  # 基準価格を更新（売買時のみ）
         notes = f"グリッド買い: {last:,}→{price:,}円（{diff:+,}円）"
 
     elif diff >= GRID_STEP_JPY and price <= GRID_UPPER_JPY:
@@ -142,13 +150,12 @@ def strategy_grid(price, state, ts):
         revenue = price * qty
         state["grid_pnl"]      += revenue  # 売り収益
         state["grid_position"] -= qty
-        state["grid_last_price"] = price
+        state["grid_last_price"] = price  # 基準価格を更新（売買時のみ）
         notes = f"グリッド売り: {last:,}→{price:,}円（{diff:+,}円）"
 
     else:
         notes = f"待機: 前回{last:,}円 現在{price:,}円（差{diff:+,}円）"
-        # 待機時も基準価格を更新（次回との差分を正しく計算するため）
-        state["grid_last_price"] = price
+        # 待機時は基準価格を変更しない（次の売買まで保持）
 
     return signal, action, qty, state, notes
 
@@ -227,7 +234,7 @@ def strategy_combined(price, ma_short, ma_long, state, ts):
         qty    = TRADE_QTY_BTC
         state["combined_pnl"]          -= price * qty
         state["combined_position"]     += qty
-        state["combined_last_price"]    = price
+        state["combined_last_price"]    = price  # 基準価格を更新（売買時のみ）
         notes = f"複合買い（レンジ相場MA乖離{diff_pct*100:.2f}%）: {diff:+,}円"
 
     elif diff >= GRID_STEP_JPY and price <= GRID_UPPER_JPY:
@@ -236,13 +243,12 @@ def strategy_combined(price, ma_short, ma_long, state, ts):
         qty    = TRADE_QTY_BTC
         state["combined_pnl"]          += price * qty
         state["combined_position"]     -= qty
-        state["combined_last_price"]    = price
+        state["combined_last_price"]    = price  # 基準価格を更新（売買時のみ）
         notes = f"複合売り（レンジ相場MA乖離{diff_pct*100:.2f}%）: {diff:+,}円"
 
     else:
         notes = f"レンジ相場・待機: MA乖離{diff_pct*100:.2f}% 差{diff:+,}円"
-        # 待機時も基準価格を更新
-        state["combined_last_price"] = price
+        # 待機時は基準価格を変更しない（次の売買まで保持）
 
     return signal, action, qty, state, notes
 
@@ -288,8 +294,8 @@ def main():
     log_rows.append([
         ts, price, "grid", sig1, act1, qty1,
         round(state["grid_pnl"]),
-        round(ma_short) if ma_short else "",
-        round(ma_long)  if ma_long  else "",
+        format_ma_for_log(ma_short),
+        format_ma_for_log(ma_long),
         note1
     ])
 
@@ -298,8 +304,8 @@ def main():
     log_rows.append([
         ts, price, "ma", sig2, act2, qty2,
         round(state["ma_pnl"]),
-        round(ma_short) if ma_short else "",
-        round(ma_long)  if ma_long  else "",
+        format_ma_for_log(ma_short),
+        format_ma_for_log(ma_long),
         note2
     ])
 
@@ -308,8 +314,8 @@ def main():
     log_rows.append([
         ts, price, "combined", sig3, act3, qty3,
         round(state["combined_pnl"]),
-        round(ma_short) if ma_short else "",
-        round(ma_long)  if ma_long  else "",
+        format_ma_for_log(ma_short),
+        format_ma_for_log(ma_long),
         note3
     ])
 
