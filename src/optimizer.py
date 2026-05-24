@@ -17,7 +17,7 @@ from datetime import datetime, timezone, timedelta
 
 ANTHROPIC_API_KEY   = os.environ["ANTHROPIC_API_KEY"]
 MODEL               = "claude-haiku-4-5-20251001"   # コスト最小・十分な能力
-MAX_TOKENS          = 4096
+MAX_TOKENS          = 8192                           # 328行のコードを確実に出力できる量
 
 LOG_FILE            = "logs/simulation_log.csv"
 SIMULATOR_FILE      = "src/simulator.py"
@@ -70,9 +70,14 @@ def call_claude(system_prompt: str, user_message: str) -> str:
     )
 
     try:
-        with urllib.request.urlopen(req, timeout=60) as res:
+        with urllib.request.urlopen(req, timeout=120) as res:
             data = json.loads(res.read())
-            return data["content"][0]["text"]
+            # stop_reason を確認（max_tokensで打ち切られていないか）
+            stop_reason = data.get("stop_reason", "")
+            text = data["content"][0]["text"]
+            if stop_reason == "max_tokens":
+                print(f"⚠️  警告: max_tokensに達しました。出力が途中で切れた可能性があります。")
+            return text
     except urllib.error.HTTPError as e:
         body = e.read().decode("utf-8", errors="replace")
         raise RuntimeError(f"Claude API エラー {e.code}: {body}")
@@ -82,44 +87,57 @@ def call_claude(system_prompt: str, user_message: str) -> str:
 
 SYSTEM_PROMPT = """あなたはBTC自動売買シミュレーターの改善専門家です。
 
-# 役割
-simulation_log.csv と現在の simulator.py を受け取り、
-戦略ロジックを分析して改善済みの simulator.py を出力します。
+simulation_log.csv と simulator.py を受け取り、ログを分析してバグや改善点を見つけ、
+修正済みの simulator.py を出力してください。
 
-# 改善の方針
-- バグ修正を最優先にする（誤動作しているロジックを直す）
-- パラメータ調整は根拠のある場合のみ行う
+改善の方針:
+- バグ修正を最優先（誤動作しているロジックを直す）
+- パラメータ調整は根拠がある場合のみ
 - コードの構造・コメント・スタイルは維持する
 - 3戦略の基本的な枠組みは変えない
 - リスク管理ルール（損切りライン等）は変えない
 
-# 出力形式（厳守）
-以下の2つのセクションを必ず出力すること。
+出力形式:
+1. まず「## ANALYSIS」セクションに変更内容と根拠を箇条書きで書く（日本語）
+2. 次に「## CODE」セクションに改善済みの完全な simulator.py を```python で囲んで書く
 
-## ANALYSIS
-変更内容と根拠を箇条書きで（日本語・簡潔に）
-
-## CODE
-改善済み simulator.py の完全なコード
-コードは ```python と ``` で囲む
-
-## ANALYSIS と ## CODE 以外のテキストは出力しないこと。"""
+必ず完全なコードを出力すること（省略・中断禁止）。"""
 
 
 def parse_response(response: str) -> tuple[str, str]:
     """ClaudeのレスポンスからANALYSISとCODEを抽出"""
+
+    # デバッグ用：レスポンス冒頭200文字を表示
+    print(f"--- Claude レスポンス冒頭 ---\n{response[:200]}\n---")
+
     # ANALYSIS セクション
     analysis_match = re.search(
-        r"## ANALYSIS\s*(.*?)(?=## CODE|\Z)", response, re.DOTALL
+        r"## ANALYSIS\s*(.*?)(?=## CODE|```python|\Z)", response, re.DOTALL
     )
     analysis = analysis_match.group(1).strip() if analysis_match else "（分析なし）"
 
-    # CODE セクション
-    code_match = re.search(
-        r"```python\s*(.*?)```", response, re.DOTALL
-    )
+    # CODE セクション: ```python ... ``` を探す
+    code_match = re.search(r"```python\s*(.*?)```", response, re.DOTALL)
+
     if not code_match:
-        raise ValueError("Claudeのレスポンスにコードブロックが見つかりませんでした")
+        # フォールバック: ``` ... ``` （言語指定なし）
+        code_match = re.search(r"```\s*(.*?)```", response, re.DOTALL)
+
+    if not code_match:
+        # フォールバック2: ## CODE 以降の全テキストをコードとみなす
+        code_section = re.search(r"## CODE\s*(.*)", response, re.DOTALL)
+        if code_section:
+            code = code_section.group(1).strip()
+            # 先頭に import や def があればコードとして扱う
+            if code.startswith(('"""', 'import', 'def ', '#')):
+                return analysis, code
+
+        # どれにも当てはまらない場合はレスポンス全文をログに残してエラー
+        print(f"--- Claude レスポンス全文 ---\n{response}\n---")
+        raise ValueError(
+            "Claudeのレスポンスにコードブロックが見つかりませんでした。"
+            "上のログでレスポンス全文を確認してください。"
+        )
 
     code = code_match.group(1).strip()
     return analysis, code
