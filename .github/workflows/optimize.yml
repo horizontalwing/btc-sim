@@ -1,0 +1,64 @@
+name: 週次戦略最適化
+
+on:
+  schedule:
+    # 毎週月曜 06:30 JST（= 日曜 21:30 UTC）
+    # 6時間おきの通常シミュレーション実行（0/6/12/18時）直後を狙う
+    - cron: "30 21 * * 0"
+  workflow_dispatch:  # 手動実行も可能
+
+jobs:
+  optimize:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write   # コミット・pushに必要
+
+    steps:
+      - name: リポジトリをチェックアウト
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # 全履歴取得（diffのため）
+
+      - name: Python セットアップ
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: オプティマイザー実行
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: python src/optimizer.py
+
+      - name: 変更があればコミット・push
+        run: |
+          git config user.name  "btc-optimizer[bot]"
+          git config user.email "btc-optimizer[bot]@users.noreply.github.com"
+
+          git add src/simulator.py logs/optimizer_log.md
+
+          # 変更がなければ何もしない
+          if git diff --staged --quiet; then
+            echo "変更なし。コミットをスキップします。"
+          else
+            # 変更サマリーをコミットメッセージに含める
+            SUMMARY=$(python - <<'EOF'
+          import re, sys
+          try:
+              with open("logs/optimizer_log.md", encoding="utf-8") as f:
+                  content = f.read()
+              # 最新エントリーのANALYSISセクションを取得
+              match = re.search(r"### 分析・変更内容\n(.*?)(?=###|\Z)", content, re.DOTALL)
+              if match:
+                  lines = [l.strip() for l in match.group(1).strip().splitlines() if l.strip()]
+                  # 最初の2行だけコミットメッセージに使う
+                  print(" / ".join(lines[:2])[:120])
+              else:
+                  print("戦略ロジック最適化")
+          except Exception:
+              print("戦略ロジック最適化")
+          EOF
+          )
+            git commit -m "🤖 自動最適化: ${SUMMARY}"
+            git push
+            echo "コミット・push 完了"
+          fi
