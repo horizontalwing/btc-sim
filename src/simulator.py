@@ -60,13 +60,13 @@ def load_state():
     if not os.path.exists(STATE_FILE):
         return {
             "price_history": [],        # 価格履歴（MA計算用）
-            "grid_last_price": None,    # グリッド: 前回の基準価格（常に更新）
+            "grid_last_price": None,    # グリッド: 前回約定価格
             "grid_pnl": 0,              # グリッド: 累計損益
             "grid_position": 0,         # グリッド: 保有BTC数（仮想）
             "ma_position": 0,           # MA: ポジション（1=買い, 0=なし）
             "ma_pnl": 0,                # MA: 累計損益
             "ma_entry_price": None,     # MA: エントリー価格
-            "combined_last_price": None,  # 複合: グリッド基準価格（常に更新）
+            "combined_last_price": None,  # 複合: グリッド基準価格
             "combined_position": 0,     # 複合: ポジション
             "combined_pnl": 0,          # 複合: 累計損益
             "combined_entry_price": None,
@@ -139,7 +139,7 @@ def strategy_grid(price, state, ts):
         cost   = price * qty
         state["grid_pnl"]      -= cost   # 買いコスト
         state["grid_position"] += qty
-        state["grid_last_price"] = price  # 売買後に基準価格を更新
+        state["grid_last_price"] = price  # 売買時のみ基準価格を更新
         notes = f"グリッド買い: {last:,}→{price:,}円（{diff:+,}円）"
 
     # グリッド幅以上の上昇で売り（レンジ上限以下）
@@ -150,13 +150,12 @@ def strategy_grid(price, state, ts):
         revenue = price * qty
         state["grid_pnl"]      += revenue  # 売り収益
         state["grid_position"] -= qty
-        state["grid_last_price"] = price  # 売買後に基準価格を更新
+        state["grid_last_price"] = price  # 売買時のみ基準価格を更新
         notes = f"グリッド売り: {last:,}→{price:,}円（{diff:+,}円）"
 
     else:
         notes = f"待機: 前回{last:,}円 現在{price:,}円（差{diff:+,}円）"
-        # 待機時も基準価格を常に更新（次の売買判定精度を向上）
-        state["grid_last_price"] = price
+        # 待機時は基準価格を変更しない（次の売買まで保持）
 
     return signal, action, qty, state, notes
 
@@ -238,7 +237,7 @@ def strategy_combined(price, ma_short, ma_long, state, ts):
         qty    = TRADE_QTY_BTC
         state["combined_pnl"]          -= price * qty
         state["combined_position"]     += qty
-        state["combined_last_price"]    = price  # 売買後に基準価格を更新
+        state["combined_last_price"]    = price  # 売買時のみ基準価格を更新
         notes = f"複合買い（レンジMA乖離{diff_pct*100:.2f}%）: {diff:+,}円"
 
     # グリッド幅以上の上昇で売り（レンジ上限以下）
@@ -248,13 +247,12 @@ def strategy_combined(price, ma_short, ma_long, state, ts):
         qty    = TRADE_QTY_BTC
         state["combined_pnl"]          += price * qty
         state["combined_position"]     -= qty
-        state["combined_last_price"]    = price  # 売買後に基準価格を更新
+        state["combined_last_price"]    = price  # 売買時のみ基準価格を更新
         notes = f"複合売り（レンジMA乖離{diff_pct*100:.2f}%）: {diff:+,}円"
 
     else:
         notes = f"レンジ相場・待機: MA乖離{diff_pct*100:.2f}% 差{diff:+,}円"
-        # 待機時も基準価格を常に更新（次の売買判定精度を向上）
-        state["combined_last_price"] = price
+        # 待機時は基準価格を変更しない（次の売買まで保持）
 
     return signal, action, qty, state, notes
 
