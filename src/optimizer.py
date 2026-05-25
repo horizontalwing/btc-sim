@@ -15,13 +15,14 @@ from datetime import datetime, timezone, timedelta
 
 # ── 設定 ────────────────────────────────────────────────
 
-ANTHROPIC_API_KEY   = os.environ["ANTHROPIC_API_KEY"]
-MODEL               = "claude-haiku-4-5-20251001"   # コスト最小・十分な能力
-MAX_TOKENS          = 8192                           # 328行のコードを確実に出力できる量
+ANTHROPIC_API_KEY       = os.environ["ANTHROPIC_API_KEY"]
+MODEL                   = "claude-haiku-4-5-20251001"   # コスト最小・十分な能力
+MAX_TOKENS              = 8192                           # 328行のコードを確実に出力できる量
 
-LOG_FILE            = "logs/simulation_log.csv"
-SIMULATOR_FILE      = "src/simulator.py"
-OPTIMIZER_LOG_FILE  = "logs/optimizer_log.md"
+LOG_FILE                = "logs/simulation_log.csv"
+SIMULATOR_FILE          = "src/simulator.py"
+OPTIMIZER_LOG_FILE      = "logs/optimizer_log.md"
+DESIGN_CONSTRAINTS_FILE = "docs/design_constraints.md"
 
 JST = timezone(timedelta(hours=9))
 
@@ -49,6 +50,46 @@ def append_optimizer_log(entry: str) -> None:
         f.write(entry + "\n")
 
 
+def load_design_constraints() -> str:
+    """設計制約ファイルを読み込む（存在しない場合は空文字列を返す）"""
+    if not os.path.exists(DESIGN_CONSTRAINTS_FILE):
+        return ""
+    return read_file(DESIGN_CONSTRAINTS_FILE)
+
+
+def build_system_prompt(constraints: str) -> str:
+    """設計制約を埋め込んだシステムプロンプトを生成する"""
+    base = """あなたはBTC自動売買シミュレーターの改善専門家です。
+
+simulation_log.csv と simulator.py を受け取り、ログを分析してバグや改善点を見つけ、
+修正済みの simulator.py を出力してください。
+
+改善の方針:
+- バグ修正を最優先（誤動作しているロジックを直す）
+- パラメータ調整は根拠がある場合のみ
+- コードの構造・コメント・スタイルは維持する
+- 3戦略の基本的な枠組みは変えない
+- リスク管理ルール（損切りライン等）は変えない
+"""
+
+    if constraints:
+        base += f"""
+【絶対に変更してはいけない設計原則】
+以下はバグではなく意図した仕様です。絶対に変更しないでください：
+
+{constraints}
+"""
+
+    base += """
+出力形式:
+1. まず「## ANALYSIS」セクションに変更内容と根拠を箇条書きで書く（日本語）
+2. 次に「## CODE」セクションに改善済みの完全な simulator.py を```python で囲んで書く
+
+必ず完全なコードを出力すること（省略・中断禁止）。"""
+
+    return base
+
+
 def call_claude(system_prompt: str, user_message: str) -> str:
     """Claude APIを呼び出してテキストを返す"""
     payload = json.dumps({
@@ -72,7 +113,6 @@ def call_claude(system_prompt: str, user_message: str) -> str:
     try:
         with urllib.request.urlopen(req, timeout=120) as res:
             data = json.loads(res.read())
-            # stop_reason を確認（max_tokensで打ち切られていないか）
             stop_reason = data.get("stop_reason", "")
             text = data["content"][0]["text"]
             if stop_reason == "max_tokens":
@@ -84,37 +124,6 @@ def call_claude(system_prompt: str, user_message: str) -> str:
 
 
 # ── 分析・最適化ロジック ──────────────────────────────────
-
-SYSTEM_PROMPT = """あなたはBTC自動売買シミュレーターの改善専門家です。
-
-simulation_log.csv と simulator.py を受け取り、ログを分析してバグや改善点を見つけ、
-修正済みの simulator.py を出力してください。
-
-改善の方針:
-- バグ修正を最優先（誤動作しているロジックを直す）
-- パラメータ調整は根拠がある場合のみ
-- コードの構造・コメント・スタイルは維持する
-- 3戦略の基本的な枠組みは変えない
-- リスク管理ルール（損切りライン等）は変えない
-
-【絶対に変更してはいけない設計原則】
-以下はバグではなく意図した仕様です。絶対に変更しないでください：
-
-1. grid_last_price は「売買時のみ」更新する
-   - 待機時（elseブロック）で grid_last_price = price と書いてはいけない
-   - 理由: 待機時に更新すると小刻みな価格変動でグリッドがリセットされ機能しなくなる
-   - 正しい動作: 前回の約定価格から50万円以上動いた時だけシグナルが出る
-
-2. combined_last_price も同様に「売買時のみ」更新する
-   - 待機時（elseブロック）で combined_last_price = price と書いてはいけない
-   - 理由: grid_last_price と同じ
-
-出力形式:
-1. まず「## ANALYSIS」セクションに変更内容と根拠を箇条書きで書く（日本語）
-2. 次に「## CODE」セクションに改善済みの完全な simulator.py を```python で囲んで書く
-
-必ず完全なコードを出力すること（省略・中断禁止）。"""
-
 
 def parse_response(response: str) -> tuple[str, str]:
     """ClaudeのレスポンスからANALYSISとCODEを抽出"""
@@ -140,11 +149,9 @@ def parse_response(response: str) -> tuple[str, str]:
         code_section = re.search(r"## CODE\s*(.*)", response, re.DOTALL)
         if code_section:
             code = code_section.group(1).strip()
-            # 先頭に import や def があればコードとして扱う
             if code.startswith(('"""', 'import', 'def ', '#')):
                 return analysis, code
 
-        # どれにも当てはまらない場合はレスポンス全文をログに残してエラー
         print(f"--- Claude レスポンス全文 ---\n{response}\n---")
         raise ValueError(
             "Claudeのレスポンスにコードブロックが見つかりませんでした。"
@@ -185,9 +192,17 @@ def main():
 
     log_csv      = summarize_log(read_file(LOG_FILE))
     simulator_py = read_file(SIMULATOR_FILE)
+    constraints  = load_design_constraints()
 
     print(f"ログ行数: {len(log_csv.splitlines())}行")
     print(f"シミュレーター: {len(simulator_py.splitlines())}行")
+    if constraints:
+        print(f"設計制約: {DESIGN_CONSTRAINTS_FILE} を読み込みました")
+    else:
+        print(f"設計制約: {DESIGN_CONSTRAINTS_FILE} が存在しません（制約なし）")
+
+    # システムプロンプトを動的に生成
+    system_prompt = build_system_prompt(constraints)
 
     # Claude APIへ投げるメッセージを組み立て
     user_message = f"""## simulation_log.csv（直近データ）
@@ -203,7 +218,7 @@ def main():
 上記を分析して改善済みの simulator.py を出力してください。"""
 
     print("Claude API 呼び出し中...")
-    response = call_claude(SYSTEM_PROMPT, user_message)
+    response = call_claude(system_prompt, user_message)
 
     # レスポンスをパース
     analysis, new_code = parse_response(response)
