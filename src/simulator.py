@@ -109,7 +109,7 @@ def format_ma_for_log(ma_value):
     """MA値をログ用にフォーマット（None時は空文字列）"""
     if ma_value is None:
         return ""
-    return round(ma_value)
+    return int(round(ma_value))
 
 
 # ── 戦略ロジック ─────────────────────────────────────────
@@ -136,8 +136,8 @@ def strategy_grid(price, state, ts):
         signal = "buy"
         action = "would_buy"
         qty    = TRADE_QTY_BTC
-        cost   = price * qty
-        state["grid_pnl"]      -= cost   # 買いコスト
+        cost   = int(price * qty)  # 整数演算で誤差排除
+        state["grid_pnl"]      -= cost
         state["grid_position"] += qty
         state["grid_last_price"] = price  # 売買時のみ基準価格を更新
         notes = f"グリッド買い: {last:,}→{price:,}円（{diff:+,}円）"
@@ -147,8 +147,8 @@ def strategy_grid(price, state, ts):
         signal = "sell"
         action = "would_sell"
         qty    = TRADE_QTY_BTC
-        revenue = price * qty
-        state["grid_pnl"]      += revenue  # 売り収益
+        revenue = int(price * qty)  # 整数演算で誤差排除
+        state["grid_pnl"]      += revenue
         state["grid_position"] -= qty
         state["grid_last_price"] = price  # 売買時のみ基準価格を更新
         notes = f"グリッド売り: {last:,}→{price:,}円（{diff:+,}円）"
@@ -168,7 +168,7 @@ def strategy_ma(price, ma_short, ma_long, state, ts):
     notes  = ""
 
     if ma_short is None or ma_long is None:
-        notes = f"MA計算中（データ蓄積待ち）"
+        notes = "MA計算中（データ蓄積待ち）"
         return signal, action, qty, state, notes
 
     prev_position = state["ma_position"]
@@ -181,7 +181,8 @@ def strategy_ma(price, ma_short, ma_long, state, ts):
         state["ma_position"]    = 1
         state["ma_entry_price"] = price
         # 仮想買いコスト（負の利益として記録）
-        state["ma_pnl"]        -= price * qty
+        cost = int(price * qty)  # 整数演算で誤差排除
+        state["ma_pnl"]        -= cost
         notes = f"ゴールデンクロス: 短期MA{ma_short:,.0f} > 長期MA{ma_long:,.0f}"
 
     elif ma_short < ma_long and prev_position == 1:
@@ -192,7 +193,8 @@ def strategy_ma(price, ma_short, ma_long, state, ts):
         state["ma_position"]    = 0
         state["ma_entry_price"] = None
         # 仮想売却収益（正の利益として記録）
-        state["ma_pnl"]        += price * qty
+        revenue = int(price * qty)  # 整数演算で誤差排除
+        state["ma_pnl"]        += revenue
         notes = f"デッドクロス: 短期MA{ma_short:,.0f} < 長期MA{ma_long:,.0f}"
 
     else:
@@ -235,7 +237,8 @@ def strategy_combined(price, ma_short, ma_long, state, ts):
         signal = "buy"
         action = "would_buy"
         qty    = TRADE_QTY_BTC
-        state["combined_pnl"]          -= price * qty
+        cost = int(price * qty)  # 整数演算で誤差排除
+        state["combined_pnl"]          -= cost
         state["combined_position"]     += qty
         state["combined_last_price"]    = price  # 売買時のみ基準価格を更新
         notes = f"複合買い（レンジMA乖離{diff_pct*100:.2f}%）: {diff:+,}円"
@@ -245,7 +248,8 @@ def strategy_combined(price, ma_short, ma_long, state, ts):
         signal = "sell"
         action = "would_sell"
         qty    = TRADE_QTY_BTC
-        state["combined_pnl"]          += price * qty
+        revenue = int(price * qty)  # 整数演算で誤差排除
+        state["combined_pnl"]          += revenue
         state["combined_position"]     -= qty
         state["combined_last_price"]    = price  # 売買時のみ基準価格を更新
         notes = f"複合売り（レンジMA乖離{diff_pct*100:.2f}%）: {diff:+,}円"
@@ -297,7 +301,7 @@ def main():
     sig1, act1, qty1, state, note1 = strategy_grid(price, state, ts)
     log_rows.append([
         ts, price, "grid", sig1, act1, qty1,
-        round(state["grid_pnl"]),
+        state["grid_pnl"],
         format_ma_for_log(ma_short),
         format_ma_for_log(ma_long),
         note1
@@ -307,7 +311,7 @@ def main():
     sig2, act2, qty2, state, note2 = strategy_ma(price, ma_short, ma_long, state, ts)
     log_rows.append([
         ts, price, "ma", sig2, act2, qty2,
-        round(state["ma_pnl"]),
+        state["ma_pnl"],
         format_ma_for_log(ma_short),
         format_ma_for_log(ma_long),
         note2
@@ -317,7 +321,7 @@ def main():
     sig3, act3, qty3, state, note3 = strategy_combined(price, ma_short, ma_long, state, ts)
     log_rows.append([
         ts, price, "combined", sig3, act3, qty3,
-        round(state["combined_pnl"]),
+        state["combined_pnl"],
         format_ma_for_log(ma_short),
         format_ma_for_log(ma_long),
         note3
