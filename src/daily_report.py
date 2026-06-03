@@ -67,7 +67,7 @@ def summarize(rows, date_str):
         sells  = [r for r in s_rows if r["signal"] == "sell"]
 
         # 最新の累計損益
-        latest_pnl = int(s_rows[-1]["cumulative_pnl_jpy"]) if s_rows else 0
+        latest_pnl = int(float(s_rows[-1]["cumulative_pnl_jpy"])) if s_rows else 0
 
         summary[s] = {
             "checks" : len(s_rows),
