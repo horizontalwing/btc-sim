@@ -29,11 +29,22 @@ def get_yesterday_jst():
     return yesterday.strftime("%Y-%m-%d")
 
 
+FIELDNAMES = [
+    "timestamp", "btc_price_jpy", "strategy", "signal",
+    "simulated_action", "simulated_qty_btc", "cumulative_pnl_jpy",
+    "ma_short", "ma_long", "notes"
+]
+
 def load_logs():
     if not os.path.exists(LOG_FILE):
         return []
     with open(LOG_FILE, encoding="utf-8") as f:
-        return list(csv.DictReader(f))
+        reader = csv.DictReader(f, fieldnames=FIELDNAMES)
+        # 1行目がヘッダーかどうか自動判定（ヘッダー行があれば読み飛ばす）
+        rows = list(reader)
+        if rows and rows[0]["timestamp"] == "timestamp":
+            rows = rows[1:]
+        return rows
 
 
 def load_state():
