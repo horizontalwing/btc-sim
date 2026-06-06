@@ -273,16 +273,17 @@ def main():
     # 状態読み込み
     state = load_state()
 
-    # 停止チェック
-    if state.get("stopped"):
-        print("⚠️  損切りラインに達したため全戦略停止中")
-        return
+    # 停止チェック（売買シグナルのみ停止・価格記録は継続）
+    is_stopped = state.get("stopped", False)
 
-    if price <= STOP_PRICE_JPY:
+    if price <= STOP_PRICE_JPY and not is_stopped:
         state["stopped"] = True
         save_state(state)
-        print(f"🛑 損切りライン（{STOP_PRICE_JPY:,}円）到達。全戦略を停止します。")
-        return
+        print(f"🛑 損切りライン（{STOP_PRICE_JPY:,}円）到達。売買シグナルを停止します。")
+        is_stopped = True
+
+    if is_stopped:
+        print("⚠️  損切りライン到達中: 売買停止・価格記録のみ継続")
 
     # 価格履歴に追加
     state["price_history"].append(price)
@@ -299,6 +300,8 @@ def main():
 
     # 戦略① グリッド
     sig1, act1, qty1, state, note1 = strategy_grid(price, state, ts)
+    if is_stopped:  # ← この1行を追加
+        sig1, act1, qty1, note1 = "hold", "none", 0, "損切りライン到達中: 売買停止"
     log_rows.append([
         ts, price, "grid", sig1, act1, qty1,
         state["grid_pnl"],
@@ -309,6 +312,8 @@ def main():
 
     # 戦略② 移動平均
     sig2, act2, qty2, state, note2 = strategy_ma(price, ma_short, ma_long, state, ts)
+    if is_stopped:  # ← この1行を追加
+        sig2, act2, qty2, note2 = "hold", "none", 0, "損切りライン到達中: 売買停止"
     log_rows.append([
         ts, price, "ma", sig2, act2, qty2,
         state["ma_pnl"],
@@ -319,6 +324,8 @@ def main():
 
     # 戦略③ 複合
     sig3, act3, qty3, state, note3 = strategy_combined(price, ma_short, ma_long, state, ts)
+    if is_stopped:  # ← この1行を追加
+        sig3, act3, qty3, note3 = "hold", "none", 0, "損切りライン到達中: 売買停止"
     log_rows.append([
         ts, price, "combined", sig3, act3, qty3,
         state["combined_pnl"],

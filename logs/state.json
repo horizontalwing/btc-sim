@@ -58,6 +58,6 @@
   "combined_position": 0,
   "combined_pnl": 0,
   "combined_entry_price": null,
-  "stopped": true,
+  "stopped": false,
   "combined_last_price": 11890000
 }
