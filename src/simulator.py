@@ -56,7 +56,7 @@ def fetch_btc_price():
 
 
 def load_state():
-    """前回の状態をJSONから読み込む"""
+    """前回の状態をJSONから読み込む（型変換により浮動小数点誤差を防止）"""
     if not os.path.exists(STATE_FILE):
         return {
             "price_history": [],        # 価格履歴（MA計算用）
@@ -73,7 +73,28 @@ def load_state():
             "stopped": False,           # 全戦略停止フラグ
         }
     with open(STATE_FILE) as f:
-        return json.load(f)
+        loaded = json.load(f)
+    
+    # 【型変換】JSON読み込み時の浮動小数点誤差を修正
+    # 整数フィールドは明示的に int() で変換
+    loaded["grid_pnl"] = int(round(loaded["grid_pnl"]))
+    loaded["grid_position"] = int(round(loaded["grid_position"]))
+    loaded["ma_pnl"] = int(round(loaded["ma_pnl"]))
+    loaded["ma_position"] = int(round(loaded["ma_position"]))
+    loaded["combined_pnl"] = int(round(loaded["combined_pnl"]))
+    loaded["combined_position"] = int(round(loaded["combined_position"]))
+    
+    # Optional フィールド（Noneまたは整数）
+    if loaded["grid_last_price"] is not None:
+        loaded["grid_last_price"] = int(round(loaded["grid_last_price"]))
+    if loaded["ma_entry_price"] is not None:
+        loaded["ma_entry_price"] = int(round(loaded["ma_entry_price"]))
+    if loaded["combined_last_price"] is not None:
+        loaded["combined_last_price"] = int(round(loaded["combined_last_price"]))
+    if loaded["combined_entry_price"] is not None:
+        loaded["combined_entry_price"] = int(round(loaded["combined_entry_price"]))
+    
+    return loaded
 
 
 def save_state(state):
@@ -139,7 +160,7 @@ def strategy_grid(price, state, ts):
         cost   = int(price * qty)  # 整数演算で誤差排除
         state["grid_pnl"]      -= cost
         state["grid_position"] += qty
-        state["grid_last_price"] = price  # 売買時のみ基準価格を更新
+        state["grid_last_price"] = price  # 売買時のみ基準価格を更新 [CONSTRAINT-001準拠]
         notes = f"グリッド買い: {last:,}→{price:,}円（{diff:+,}円）"
 
     # グリッド幅以上の上昇で売り（レンジ上限以下）
@@ -150,12 +171,16 @@ def strategy_grid(price, state, ts):
         revenue = int(price * qty)  # 整数演算で誤差排除
         state["grid_pnl"]      += revenue
         state["grid_position"] -= qty
-        state["grid_last_price"] = price  # 売買時のみ基準価格を更新
+        state["grid_last_price"] = price  # 売買時のみ基準価格を更新 [CONSTRAINT-001準拠]
         notes = f"グリッド売り: {last:,}→{price:,}円（{diff:+,}円）"
 
     else:
         notes = f"待機: 前回{last:,}円 現在{price:,}円（差{diff:+,}円）"
         # 待機時は基準価格を変更しない（次の売買まで保持）
+
+    # 【型保証】状態の整数フィールドを int() で保証
+    state["grid_pnl"] = int(round(state["grid_pnl"]))
+    state["grid_position"] = int(round(state["grid_position"]))
 
     return signal, action, qty, state, notes
 
@@ -201,6 +226,10 @@ def strategy_ma(price, ma_short, ma_long, state, ts):
         cross = "短期>長期" if ma_short > ma_long else "短期<長期"
         notes = f"待機: {cross} ポジション{prev_position}"
 
+    # 【型保証】状態の整数フィールドを int() で保証
+    state["ma_pnl"] = int(round(state["ma_pnl"]))
+    state["ma_position"] = int(round(state["ma_position"]))
+
     return signal, action, qty, state, notes
 
 
@@ -240,7 +269,7 @@ def strategy_combined(price, ma_short, ma_long, state, ts):
         cost = int(price * qty)  # 整数演算で誤差排除
         state["combined_pnl"]          -= cost
         state["combined_position"]     += qty
-        state["combined_last_price"]    = price  # 売買時のみ基準価格を更新
+        state["combined_last_price"]    = price  # 売買時のみ基準価格を更新 [CONSTRAINT-002準拠]
         notes = f"複合買い（レンジMA乖離{diff_pct*100:.2f}%）: {diff:+,}円"
 
     # グリッド幅以上の上昇で売り（レンジ上限以下）
@@ -251,12 +280,16 @@ def strategy_combined(price, ma_short, ma_long, state, ts):
         revenue = int(price * qty)  # 整数演算で誤差排除
         state["combined_pnl"]          += revenue
         state["combined_position"]     -= qty
-        state["combined_last_price"]    = price  # 売買時のみ基準価格を更新
+        state["combined_last_price"]    = price  # 売買時のみ基準価格を更新 [CONSTRAINT-002準拠]
         notes = f"複合売り（レンジMA乖離{diff_pct*100:.2f}%）: {diff:+,}円"
 
     else:
         notes = f"レンジ相場・待機: MA乖離{diff_pct*100:.2f}% 差{diff:+,}円"
         # 待機時は基準価格を変更しない（次の売買まで保持）
+
+    # 【型保証】状態の整数フィールドを int() で保証
+    state["combined_pnl"] = int(round(state["combined_pnl"]))
+    state["combined_position"] = int(round(state["combined_position"]))
 
     return signal, action, qty, state, notes
 
@@ -300,7 +333,7 @@ def main():
 
     # 戦略① グリッド
     sig1, act1, qty1, state, note1 = strategy_grid(price, state, ts)
-    if is_stopped:  # ← この1行を追加
+    if is_stopped:
         sig1, act1, qty1, note1 = "hold", "none", 0, "損切りライン到達中: 売買停止"
     log_rows.append([
         ts, price, "grid", sig1, act1, qty1,
@@ -312,7 +345,7 @@ def main():
 
     # 戦略② 移動平均
     sig2, act2, qty2, state, note2 = strategy_ma(price, ma_short, ma_long, state, ts)
-    if is_stopped:  # ← この1行を追加
+    if is_stopped:
         sig2, act2, qty2, note2 = "hold", "none", 0, "損切りライン到達中: 売買停止"
     log_rows.append([
         ts, price, "ma", sig2, act2, qty2,
@@ -324,7 +357,7 @@ def main():
 
     # 戦略③ 複合
     sig3, act3, qty3, state, note3 = strategy_combined(price, ma_short, ma_long, state, ts)
-    if is_stopped:  # ← この1行を追加
+    if is_stopped:
         sig3, act3, qty3, note3 = "hold", "none", 0, "損切りライン到達中: 売買停止"
     log_rows.append([
         ts, price, "combined", sig3, act3, qty3,
