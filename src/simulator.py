@@ -62,6 +62,15 @@ def satoshi_to_btc(satoshi):
     return satoshi / SATOSHI_PER_BTC
 
 
+def calc_jpy_cost(price_jpy, qty_satoshi):
+    """
+    購入コスト（円）を計算
+    価格（円） × 数量（Satoshi） ÷ 1BTC当たりSatoshi数 = 円
+    整数演算で誤差を最小化
+    """
+    return (price_jpy * qty_satoshi) // SATOSHI_PER_BTC
+
+
 def load_state():
     """前回の状態をJSONから読み込む（型変換により浮動小数点誤差を防止）"""
     if not os.path.exists(STATE_FILE):
@@ -174,9 +183,9 @@ def strategy_grid(price, state, ts):
         qty_satoshi = TRADE_QTY_SATOSHI  # Satoshi単位で管理
         qty_btc = satoshi_to_btc(qty_satoshi)  # ログ表示用
         
-        cost = int(price * qty_satoshi / SATOSHI_PER_BTC)  # 整数演算
-        state["grid_pnl"] = int(round(state["grid_pnl"])) - cost
-        state["grid_position"] = int(round(state["grid_position"])) + qty_satoshi
+        cost = calc_jpy_cost(price, qty_satoshi)  # 整数演算で円コストを計算
+        state["grid_pnl"] = int(state["grid_pnl"]) - cost
+        state["grid_position"] = int(state["grid_position"]) + qty_satoshi
         state["grid_last_price"] = price  # 売買時のみ基準価格を更新 [CONSTRAINT-001準拠]
         notes = f"グリッド買い: {last:,}→{price:,}円（{diff:+,}円）"
 
@@ -187,25 +196,31 @@ def strategy_grid(price, state, ts):
         qty_satoshi = TRADE_QTY_SATOSHI  # Satoshi単位で管理
         qty_btc = satoshi_to_btc(qty_satoshi)  # ログ表示用
         
-        revenue = int(price * qty_satoshi / SATOSHI_PER_BTC)  # 整数演算
-        state["grid_pnl"] = int(round(state["grid_pnl"])) + revenue
-        state["grid_position"] = int(round(state["grid_position"])) - qty_satoshi
+        revenue = calc_jpy_cost(price, qty_satoshi)  # 整数演算で円収益を計算
+        state["grid_pnl"] = int(state["grid_pnl"]) + revenue
+        state["grid_position"] = int(state["grid_position"]) - qty_satoshi
         state["grid_last_price"] = price  # 売買時のみ基準価格を更新 [CONSTRAINT-001準拠]
         notes = f"グリッド売り: {last:,}→{price:,}円（{diff:+,}円）"
 
     else:
         notes = f"待機: 前回{last:,}円 現在{price:,}円（差{diff:+,}円）"
-        # 待機時は基準価格を変更しない（次の売買まで保持）
+        # ★ CONSTRAINT-001準拠: 待機時は grid_last_price を更新しない
+        # 小刻みな価格変動でグリッドがリセットされることを防止
 
     # 【型保証】計算直後に整数化
-    state["grid_pnl"] = int(round(state["grid_pnl"]))
-    state["grid_position"] = int(round(state["grid_position"]))
+    state["grid_pnl"] = int(state["grid_pnl"])
+    state["grid_position"] = int(state["grid_position"])
 
     return signal, action, qty_btc, state, notes
 
 
 def strategy_ma(price, ma_short, ma_long, state, ts):
-    """戦略②: 移動平均クロス"""
+    """
+    戦略②: 移動平均クロス
+    
+    ゴールデンクロス（短期MA > 長期MA）で買い
+    デッドクロス（短期MA < 長期MA）で売り
+    """
     signal = "hold"
     action = "none"
     qty_btc = 0.0  # ログ出力用（BTC単位）
@@ -227,8 +242,8 @@ def strategy_ma(price, ma_short, ma_long, state, ts):
         state["ma_position"] = qty_satoshi  # Satoshi単位で記録
         state["ma_entry_price"] = price
         
-        cost = int(price * qty_satoshi / SATOSHI_PER_BTC)  # 整数演算
-        state["ma_pnl"] = int(round(state["ma_pnl"])) - cost
+        cost = calc_jpy_cost(price, qty_satoshi)  # 整数演算で円コストを計算
+        state["ma_pnl"] = int(state["ma_pnl"]) - cost
         notes = f"ゴールデンクロス: 短期MA{ma_short:,.0f} > 長期MA{ma_long:,.0f}"
 
     elif ma_short < ma_long and prev_position_satoshi > 0:
@@ -241,8 +256,8 @@ def strategy_ma(price, ma_short, ma_long, state, ts):
         state["ma_position"] = 0
         state["ma_entry_price"] = None
         
-        revenue = int(price * qty_satoshi / SATOSHI_PER_BTC)  # 整数演算
-        state["ma_pnl"] = int(round(state["ma_pnl"])) + revenue
+        revenue = calc_jpy_cost(price, qty_satoshi)  # 整数演算で円収益を計算
+        state["ma_pnl"] = int(state["ma_pnl"]) + revenue
         notes = f"デッドクロス: 短期MA{ma_short:,.0f} < 長期MA{ma_long:,.0f}"
 
     else:
@@ -251,14 +266,19 @@ def strategy_ma(price, ma_short, ma_long, state, ts):
         notes = f"待機: {cross} ポジション{pos_btc:.3f}"
 
     # 【型保証】計算直後に整数化
-    state["ma_pnl"] = int(round(state["ma_pnl"]))
-    state["ma_position"] = int(round(state["ma_position"]))
+    state["ma_pnl"] = int(state["ma_pnl"])
+    state["ma_position"] = int(state["ma_position"])
 
     return signal, action, qty_btc, state, notes
 
 
 def strategy_combined(price, ma_short, ma_long, state, ts):
-    """戦略③: 複合（移動平均でレンジ判定→グリッド実行）"""
+    """
+    戦略③: 複合（移動平均でレンジ判定→グリッド実行）
+    
+    短期MAと長期MAの乖離が1%以内ならレンジ相場と判定
+    レンジ相場で、かつグリッド条件を満たせば売買実行
+    """
     signal = "hold"
     action = "none"
     qty_btc = 0.0  # ログ出力用（BTC単位）
@@ -292,9 +312,9 @@ def strategy_combined(price, ma_short, ma_long, state, ts):
         qty_satoshi = TRADE_QTY_SATOSHI  # Satoshi単位で管理
         qty_btc = satoshi_to_btc(qty_satoshi)  # ログ表示用
         
-        cost = int(price * qty_satoshi / SATOSHI_PER_BTC)  # 整数演算
-        state["combined_pnl"] = int(round(state["combined_pnl"])) - cost
-        state["combined_position"] = int(round(state["combined_position"])) + qty_satoshi
+        cost = calc_jpy_cost(price, qty_satoshi)  # 整数演算で円コストを計算
+        state["combined_pnl"] = int(state["combined_pnl"]) - cost
+        state["combined_position"] = int(state["combined_position"]) + qty_satoshi
         state["combined_last_price"] = price  # 売買時のみ基準価格を更新 [CONSTRAINT-002準拠]
         notes = f"複合買い（レンジMA乖離{diff_pct*100:.2f}%）: {diff:+,}円"
 
@@ -305,19 +325,20 @@ def strategy_combined(price, ma_short, ma_long, state, ts):
         qty_satoshi = TRADE_QTY_SATOSHI  # Satoshi単位で管理
         qty_btc = satoshi_to_btc(qty_satoshi)  # ログ表示用
         
-        revenue = int(price * qty_satoshi / SATOSHI_PER_BTC)  # 整数演算
-        state["combined_pnl"] = int(round(state["combined_pnl"])) + revenue
-        state["combined_position"] = int(round(state["combined_position"])) - qty_satoshi
+        revenue = calc_jpy_cost(price, qty_satoshi)  # 整数演算で円収益を計算
+        state["combined_pnl"] = int(state["combined_pnl"]) + revenue
+        state["combined_position"] = int(state["combined_position"]) - qty_satoshi
         state["combined_last_price"] = price  # 売買時のみ基準価格を更新 [CONSTRAINT-002準拠]
         notes = f"複合売り（レンジMA乖離{diff_pct*100:.2f}%）: {diff:+,}円"
 
     else:
         notes = f"レンジ相場・待機: MA乖離{diff_pct*100:.2f}% 差{diff:+,}円"
-        # 待機時は基準価格を変更しない（次の売買まで保持）
+        # ★ CONSTRAINT-002準拠: 待機時は combined_last_price を更新しない
+        # グリッド部分も CONSTRAINT-001 と同じ原則に従う
 
     # 【型保証】計算直後に整数化
-    state["combined_pnl"] = int(round(state["combined_pnl"]))
-    state["combined_position"] = int(round(state["combined_position"]))
+    state["combined_pnl"] = int(state["combined_pnl"])
+    state["combined_position"] = int(state["combined_position"])
 
     return signal, action, qty_btc, state, notes
 
