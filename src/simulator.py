@@ -86,29 +86,28 @@ def load_state():
             "combined_position": 0,     # 複合: ポジション（Satoshi単位）
             "combined_pnl": 0,          # 複合: 累計損益（円）
             "combined_entry_price": None,
-            "stopped": False,           # 全戦略停止フラグ
         }
     with open(STATE_FILE) as f:
         loaded = json.load(f)
     
     # 【型変換】JSON読み込み時の浮動小数点誤差を修正
     # 整数フィールドは明示的に int() で変換（損益と位置）
-    loaded["grid_pnl"] = int(round(loaded["grid_pnl"]))
-    loaded["grid_position"] = int(round(loaded["grid_position"]))
-    loaded["ma_pnl"] = int(round(loaded["ma_pnl"]))
-    loaded["ma_position"] = int(round(loaded["ma_position"]))
-    loaded["combined_pnl"] = int(round(loaded["combined_pnl"]))
-    loaded["combined_position"] = int(round(loaded["combined_position"]))
+    loaded["grid_pnl"] = int(loaded["grid_pnl"])
+    loaded["grid_position"] = int(loaded["grid_position"])
+    loaded["ma_pnl"] = int(loaded["ma_pnl"])
+    loaded["ma_position"] = int(loaded["ma_position"])
+    loaded["combined_pnl"] = int(loaded["combined_pnl"])
+    loaded["combined_position"] = int(loaded["combined_position"])
     
     # Optional フィールド（Noneまたは整数）
     if loaded["grid_last_price"] is not None:
-        loaded["grid_last_price"] = int(round(loaded["grid_last_price"]))
+        loaded["grid_last_price"] = int(loaded["grid_last_price"])
     if loaded["ma_entry_price"] is not None:
-        loaded["ma_entry_price"] = int(round(loaded["ma_entry_price"]))
+        loaded["ma_entry_price"] = int(loaded["ma_entry_price"])
     if loaded["combined_last_price"] is not None:
-        loaded["combined_last_price"] = int(round(loaded["combined_last_price"]))
+        loaded["combined_last_price"] = int(loaded["combined_last_price"])
     if loaded["combined_entry_price"] is not None:
-        loaded["combined_entry_price"] = int(round(loaded["combined_entry_price"]))
+        loaded["combined_entry_price"] = int(loaded["combined_entry_price"])
     
     return loaded
 
@@ -116,12 +115,16 @@ def load_state():
 def save_state(state):
     """状態をJSONに保存（保存前に再度整数化して誤差を排除）"""
     # 【型保証・保存時】保存直前に再度整数化
-    state["grid_pnl"] = int(round(state["grid_pnl"]))
-    state["grid_position"] = int(round(state["grid_position"]))
-    state["ma_pnl"] = int(round(state["ma_pnl"]))
-    state["ma_position"] = int(round(state["ma_position"]))
-    state["combined_pnl"] = int(round(state["combined_pnl"]))
-    state["combined_position"] = int(round(state["combined_position"]))
+    state["grid_pnl"] = int(state["grid_pnl"])
+    state["grid_position"] = int(state["grid_position"])
+    state["ma_pnl"] = int(state["ma_pnl"])
+    state["ma_position"] = int(state["ma_position"])
+    state["combined_pnl"] = int(state["combined_pnl"])
+    state["combined_position"] = int(state["combined_position"])
+    
+    # 【修正】stopped フラグは保存しない（毎回実行時に価格で判定）
+    # これにより損切りラインから回復した場合に自動的に売買が再開される
+    state.pop("stopped", None)
     
     os.makedirs(os.path.dirname(STATE_FILE), exist_ok=True)
     with open(STATE_FILE, "w") as f:
@@ -355,17 +358,14 @@ def main():
     # 状態読み込み
     state = load_state()
 
-    # 停止チェック（売買シグナルのみ停止・価格記録は継続）
-    is_stopped = state.get("stopped", False)
-
-    if price <= STOP_PRICE_JPY and not is_stopped:
-        state["stopped"] = True
-        save_state(state)
-        print(f"🛑 損切りライン（{STOP_PRICE_JPY:,}円）到達。売買シグナルを停止します。")
-        is_stopped = True
+    # 【修正】停止フラグは毎回の実行時に価格で判定（永続化しない）
+    # これにより損切りラインから回復した場合に自動的に売買が再開される
+    is_stopped = price <= STOP_PRICE_JPY
 
     if is_stopped:
-        print("⚠️  損切りライン到達中: 売買停止・価格記録のみ継続")
+        print(f"⚠️  損切りライン到達中（{STOP_PRICE_JPY:,}円）: 売買停止・価格記録のみ継続")
+    else:
+        print("✅ 売買シグナル有効")
 
     # 価格履歴に追加
     state["price_history"].append(price)
