@@ -162,7 +162,7 @@ def format_ma_for_log(ma_value):
 
 # ── 戦略ロジック ─────────────────────────────────────────
 
-def strategy_grid(price, state, ts):
+def strategy_grid(price, state, ts, is_stopped):
     """戦略①: グリッドトレード"""
     signal = "hold"
     action = "none"
@@ -175,6 +175,12 @@ def strategy_grid(price, state, ts):
     if last is None:
         state["grid_last_price"] = price
         notes = "初回実行: ベースライン記録"
+        return signal, action, qty_btc, state, notes
+
+    # 【修正】損切りライン到達時のみ：基準価格をリセット（次回再開時の違和感を解消）
+    if is_stopped:
+        state["grid_last_price"] = price
+        notes = "損切りライン到達中: 基準価格を現在値に更新"
         return signal, action, qty_btc, state, notes
 
     diff = price - last
@@ -217,7 +223,7 @@ def strategy_grid(price, state, ts):
     return signal, action, qty_btc, state, notes
 
 
-def strategy_ma(price, ma_short, ma_long, state, ts):
+def strategy_ma(price, ma_short, ma_long, state, ts, is_stopped):
     """
     戦略②: 移動平均クロス
     
@@ -231,6 +237,13 @@ def strategy_ma(price, ma_short, ma_long, state, ts):
 
     if ma_short is None or ma_long is None:
         notes = "MA計算中（データ蓄積待ち）"
+        return signal, action, qty_btc, state, notes
+
+    # 【修正】損切りライン到達時は売買停止（ポジション保持）
+    if is_stopped:
+        prev_position_satoshi = state["ma_position"]
+        pos_btc = satoshi_to_btc(prev_position_satoshi) if prev_position_satoshi > 0 else 0
+        notes = f"損切りライン到達中: 売買停止（ポジション{pos_btc:.3f}BTC保持）"
         return signal, action, qty_btc, state, notes
 
     prev_position_satoshi = state["ma_position"]
@@ -275,7 +288,7 @@ def strategy_ma(price, ma_short, ma_long, state, ts):
     return signal, action, qty_btc, state, notes
 
 
-def strategy_combined(price, ma_short, ma_long, state, ts):
+def strategy_combined(price, ma_short, ma_long, state, ts, is_stopped):
     """
     戦略③: 複合（移動平均でレンジ判定→グリッド実行）
     
@@ -299,11 +312,17 @@ def strategy_combined(price, ma_short, ma_long, state, ts):
         notes = f"トレンド相場: MA乖離{diff_pct*100:.2f}% → グリッド停止"
         return signal, action, qty_btc, state, notes
 
+    # 【修正】損切りライン到達時のみ：基準価格をリセット（次回再開時の違和感を解消）
+    if is_stopped:
+        state["combined_last_price"] = price
+        notes = f"損切りライン到達中: 基準価格を現在値に更新（レンジMA乖離{diff_pct*100:.2f}%）"
+        return signal, action, qty_btc, state, notes
+
     # レンジ相場 → グリッドロジックを適用（combined用state）
     last = state.get("combined_last_price")
     if last is None:
         state["combined_last_price"] = price
-        notes = "レンジ相場: ベースライン記録"
+        notes = f"レンジ相場: ベースライン記録（MA乖離{diff_pct*100:.2f}%）"
         return signal, action, qty_btc, state, notes
 
     diff = price - last
@@ -363,7 +382,7 @@ def main():
     is_stopped = price <= STOP_PRICE_JPY
 
     if is_stopped:
-        print(f"⚠️  損切りライン到達中（{STOP_PRICE_JPY:,}円）: 売買停止・価格記録のみ継続")
+        print(f"⚠️  損切りライン到達中（{STOP_PRICE_JPY:,}円）: 売買停止・基準価格リセット中")
     else:
         print("✅ 売買シグナル有効")
 
@@ -381,9 +400,7 @@ def main():
     log_rows = []
 
     # 戦略① グリッド
-    sig1, act1, qty1, state, note1 = strategy_grid(price, state, ts)
-    if is_stopped:
-        sig1, act1, qty1, note1 = "hold", "none", 0, "損切りライン到達中: 売買停止"
+    sig1, act1, qty1, state, note1 = strategy_grid(price, state, ts, is_stopped)
     log_rows.append([
         ts, price, "grid", sig1, act1, qty1,
         state["grid_pnl"],
@@ -393,9 +410,7 @@ def main():
     ])
 
     # 戦略② 移動平均
-    sig2, act2, qty2, state, note2 = strategy_ma(price, ma_short, ma_long, state, ts)
-    if is_stopped:
-        sig2, act2, qty2, note2 = "hold", "none", 0, "損切りライン到達中: 売買停止"
+    sig2, act2, qty2, state, note2 = strategy_ma(price, ma_short, ma_long, state, ts, is_stopped)
     log_rows.append([
         ts, price, "ma", sig2, act2, qty2,
         state["ma_pnl"],
@@ -405,9 +420,7 @@ def main():
     ])
 
     # 戦略③ 複合
-    sig3, act3, qty3, state, note3 = strategy_combined(price, ma_short, ma_long, state, ts)
-    if is_stopped:
-        sig3, act3, qty3, note3 = "hold", "none", 0, "損切りライン到達中: 売買停止"
+    sig3, act3, qty3, state, note3 = strategy_combined(price, ma_short, ma_long, state, ts, is_stopped)
     log_rows.append([
         ts, price, "combined", sig3, act3, qty3,
         state["combined_pnl"],
