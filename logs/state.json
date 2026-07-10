@@ -1,6 +1,5 @@
 {
   "price_history": [
-    9701440,
     9737564,
     9687440,
     9644104,
@@ -47,9 +46,10 @@
     10198720,
     10188211,
     10178120,
-    10282043
+    10282043,
+    10334619
   ],
-  "grid_last_price": 10282043,
+  "grid_last_price": 10334619,
   "grid_pnl": -11656,
   "grid_position": 0,
   "ma_position": 100000,
@@ -58,5 +58,5 @@
   "combined_position": 0,
   "combined_pnl": 0,
   "combined_entry_price": null,
-  "combined_last_price": 10282043
+  "combined_last_price": 10334619
 }
