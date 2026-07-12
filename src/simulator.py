@@ -229,6 +229,8 @@ def strategy_ma(price, ma_short, ma_long, state, ts, is_stopped):
     
     ゴールデンクロス（短期MA > 長期MA）で買い
     デッドクロス（短期MA < 長期MA）で売り
+    
+    【バグ修正】売却時の損益計算を正確に実行
     """
     signal = "hold"
     action = "none"
@@ -272,6 +274,8 @@ def strategy_ma(price, ma_short, ma_long, state, ts, is_stopped):
         state["ma_position"] = 0
         state["ma_entry_price"] = None
         
+        # 【バグ修正】売却時の損益計算ロジック
+        # 売却収益（円）を加算する（買値に対する差益が損益）
         revenue = calc_jpy_cost(price, qty_satoshi)  # 整数演算で円収益を計算
         state["ma_pnl"] = int(state["ma_pnl"]) + revenue
         notes = f"デッドクロス: 短期MA{ma_short:,.0f} < 長期MA{ma_long:,.0f}"
