@@ -231,6 +231,7 @@ def strategy_ma(price, ma_short, ma_long, state, ts, is_stopped):
     デッドクロス（短期MA < 長期MA）で売り
     
     【バグ修正】売却時の損益計算を正確に実行
+    - エントリー価格を保存し、売却時に (売却額 - 購入額) で損益を計算
     """
     signal = "hold"
     action = "none"
@@ -257,8 +258,8 @@ def strategy_ma(price, ma_short, ma_long, state, ts, is_stopped):
         qty_satoshi = TRADE_QTY_SATOSHI  # Satoshi単位で管理
         qty_btc = satoshi_to_btc(qty_satoshi)  # ログ表示用
         
-        state["ma_position"] = qty_satoshi  # Satoshi単位で記録
-        state["ma_entry_price"] = price
+        state["ma_position"] = int(qty_satoshi)  # Satoshi単位で記録
+        state["ma_entry_price"] = int(price)
         
         cost = calc_jpy_cost(price, qty_satoshi)  # 整数演算で円コストを計算
         state["ma_pnl"] = int(state["ma_pnl"]) - cost
@@ -271,13 +272,19 @@ def strategy_ma(price, ma_short, ma_long, state, ts, is_stopped):
         qty_satoshi = prev_position_satoshi  # 保有量を売却
         qty_btc = satoshi_to_btc(qty_satoshi)  # ログ表示用
         
+        entry_price = state["ma_entry_price"] if state["ma_entry_price"] is not None else price
+        
+        # 【バグ修正】正確な損益計算
+        # 売却収益 = 売却額
+        # 購入コスト = (エントリー価格 × 数量 / SATOSHI_PER_BTC)
+        # 損益 = 売却額 - 購入コスト
+        revenue = calc_jpy_cost(price, qty_satoshi)  # 売却額（整数演算）
+        cost = calc_jpy_cost(entry_price, qty_satoshi)  # 購入額（整数演算）
+        profit = int(revenue - cost)  # 真の損益
+        
+        state["ma_pnl"] = int(state["ma_pnl"]) + profit
         state["ma_position"] = 0
         state["ma_entry_price"] = None
-        
-        # 【バグ修正】売却時の損益計算ロジック
-        # 売却収益（円）を加算する（買値に対する差益が損益）
-        revenue = calc_jpy_cost(price, qty_satoshi)  # 整数演算で円収益を計算
-        state["ma_pnl"] = int(state["ma_pnl"]) + revenue
         notes = f"デッドクロス: 短期MA{ma_short:,.0f} < 長期MA{ma_long:,.0f}"
 
     else:
@@ -298,6 +305,8 @@ def strategy_combined(price, ma_short, ma_long, state, ts, is_stopped):
     
     短期MAと長期MAの乖離が1%以内ならレンジ相場と判定
     レンジ相場で、かつグリッド条件を満たせば売買実行
+    
+    【バグ修正】ゼロ除算保護を追加
     """
     signal = "hold"
     action = "none"
@@ -306,6 +315,11 @@ def strategy_combined(price, ma_short, ma_long, state, ts, is_stopped):
 
     if ma_short is None or ma_long is None:
         notes = "MA計算中（データ蓄積待ち）"
+        return signal, action, qty_btc, state, notes
+
+    # 【バグ修正】ゼロ除算保護
+    if ma_long <= 0:
+        notes = "MA計算エラー: 長期MA異常"
         return signal, action, qty_btc, state, notes
 
     # レンジ判定
