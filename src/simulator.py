@@ -24,7 +24,7 @@ MA_SHORT_PERIOD     = 6         # 短期（6期間 = 約6時間）
 MA_LONG_PERIOD      = 24        # 長期（24期間 = 約24時間）
 
 # 複合戦略：レンジ判定の閾値
-RANGE_THRESHOLD_PCT = 0.01      # 短期MAと長期MAの差が1%以内ならレンジ相場
+RANGE_THRESHOLD_PCT = 0.015     # 短期MAと長期MAの差が1.5%以内ならレンジ相場（改善：1% → 1.5%）
 
 # 売買量（Satoshi単位で管理：100 Satoshi = 0.001 BTC）
 TRADE_QTY_SATOSHI   = 100_000   # 0.001 BTC = 100,000 Satoshi
@@ -86,6 +86,7 @@ def load_state():
             "combined_position": 0,     # 複合: ポジション（Satoshi単位）
             "combined_pnl": 0,          # 複合: 累計損益（円）
             "combined_entry_price": None,
+            "combined_stopped_flag": False,  # 複合：前回のstopped状態を記録（今回リセット処理判定用）
         }
     with open(STATE_FILE) as f:
         loaded = json.load(f)
@@ -100,14 +101,18 @@ def load_state():
     loaded["combined_position"] = int(loaded["combined_position"])
     
     # Optional フィールド（Noneまたは整数）
-    if loaded["grid_last_price"] is not None:
+    if loaded.get("grid_last_price") is not None:
         loaded["grid_last_price"] = int(loaded["grid_last_price"])
-    if loaded["ma_entry_price"] is not None:
+    if loaded.get("ma_entry_price") is not None:
         loaded["ma_entry_price"] = int(loaded["ma_entry_price"])
-    if loaded["combined_last_price"] is not None:
+    if loaded.get("combined_last_price") is not None:
         loaded["combined_last_price"] = int(loaded["combined_last_price"])
-    if loaded["combined_entry_price"] is not None:
+    if loaded.get("combined_entry_price") is not None:
         loaded["combined_entry_price"] = int(loaded["combined_entry_price"])
+    
+    # stopped_flag の初期化（キー存在チェック）
+    if "combined_stopped_flag" not in loaded:
+        loaded["combined_stopped_flag"] = False
     
     return loaded
 
@@ -154,9 +159,10 @@ def calc_ma(prices, period):
 
 
 def format_ma_for_log(ma_value):
-    """MA値をログ用にフォーマット（None時は空文字列）"""
+    """MA値をログ用にフォーマット（None時は空文字列、丸め処理を一貫化）"""
     if ma_value is None:
         return ""
+    # 【改善】int()で確実に整数化して浮動小数点誤差を排除
     return int(round(ma_value))
 
 
@@ -273,6 +279,7 @@ def strategy_ma(price, ma_short, ma_long, state, ts, is_stopped):
         qty_btc = satoshi_to_btc(qty_satoshi)  # ログ表示用
         
         entry_price = state["ma_entry_price"] if state["ma_entry_price"] is not None else price
+        entry_price = int(entry_price)  # 【改善】型保証を強化
         
         # 【バグ修正】正確な損益計算
         # 売却収益 = 売却額
@@ -303,10 +310,13 @@ def strategy_combined(price, ma_short, ma_long, state, ts, is_stopped):
     """
     戦略③: 複合（移動平均でレンジ判定→グリッド実行）
     
-    短期MAと長期MAの乖離が1%以内ならレンジ相場と判定
+    短期MAと長期MAの乖離が1.5%以内ならレンジ相場と判定
     レンジ相場で、かつグリッド条件を満たせば売買実行
     
-    【バグ修正】ゼロ除算保護を追加
+    【改善点】
+    - レンジ判定閾値を1% → 1.5%に拡大（浮動小数点誤差対策・取引機会増加）
+    - 損切りライン到達時の重複更新を防止（前回状態フラグで一度限り）
+    - ゼロ除算保護を追加
     """
     signal = "hold"
     action = "none"
@@ -328,13 +338,26 @@ def strategy_combined(price, ma_short, ma_long, state, ts, is_stopped):
 
     if not is_range:
         notes = f"トレンド相場: MA乖離{diff_pct*100:.2f}% → グリッド停止"
+        # 【改善】トレンド判定時は stopped_flag をリセット
+        state["combined_stopped_flag"] = False
         return signal, action, qty_btc, state, notes
 
-    # 【修正】損切りライン到達時のみ：基準価格をリセット（次回再開時の違和感を解消）
-    if is_stopped:
+    # 【改善】損切りライン到達時のみ：基準価格を一度だけリセット
+    # 前回 stopped だったが今回も stopped なら、既に更新済みなのでスキップ
+    prev_stopped = state.get("combined_stopped_flag", False)
+    if is_stopped and not prev_stopped:
+        # 損切りラインに初めて到達した → 基準価格をリセット
         state["combined_last_price"] = price
+        state["combined_stopped_flag"] = True
         notes = f"損切りライン到達中: 基準価格を現在値に更新（レンジMA乖離{diff_pct*100:.2f}%）"
         return signal, action, qty_btc, state, notes
+    elif is_stopped and prev_stopped:
+        # 既に損切りライン中 → 基準価格の更新はスキップ
+        notes = f"損切りライン到達中: グリッド停止（レンジMA乖離{diff_pct*100:.2f}%）"
+        return signal, action, qty_btc, state, notes
+    else:
+        # 損切りラインから回復 → フラグをリセット
+        state["combined_stopped_flag"] = False
 
     # レンジ相場 → グリッドロジックを適用（combined用state）
     last = state.get("combined_last_price")
