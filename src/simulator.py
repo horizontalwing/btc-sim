@@ -24,7 +24,7 @@ MA_SHORT_PERIOD     = 6         # 短期（6期間 = 約6時間）
 MA_LONG_PERIOD      = 24        # 長期（24期間 = 約24時間）
 
 # 複合戦略：レンジ判定の閾値
-RANGE_THRESHOLD_PCT = 0.015     # 短期MAと長期MAの差が1.5%以内ならレンジ相場（改善：1% → 1.5%）
+RANGE_THRESHOLD_PCT = 0.015     # 短期MAと長期MAの差が1.5%以内ならレンジ相場
 
 # 売買量（Satoshi単位で管理：100 Satoshi = 0.001 BTC）
 TRADE_QTY_SATOSHI   = 100_000   # 0.001 BTC = 100,000 Satoshi
@@ -86,7 +86,7 @@ def load_state():
             "combined_position": 0,     # 複合: ポジション（Satoshi単位）
             "combined_pnl": 0,          # 複合: 累計損益（円）
             "combined_entry_price": None,
-            "combined_stopped_flag": False,  # 複合：前回のstopped状態を記録（今回リセット処理判定用）
+            "combined_stopped_flag": False,  # 複合：損切りライン到達フラグ（毎実行時にリセット）
         }
     with open(STATE_FILE) as f:
         loaded = json.load(f)
@@ -110,7 +110,7 @@ def load_state():
     if loaded.get("combined_entry_price") is not None:
         loaded["combined_entry_price"] = int(loaded["combined_entry_price"])
     
-    # stopped_flag の初期化（キー存在チェック）
+    # stopped_flag の初期化（毎実行時にリセット）
     if "combined_stopped_flag" not in loaded:
         loaded["combined_stopped_flag"] = False
     
@@ -130,6 +130,9 @@ def save_state(state):
     # 【修正】stopped フラグは保存しない（毎回実行時に価格で判定）
     # これにより損切りラインから回復した場合に自動的に売買が再開される
     state.pop("stopped", None)
+    
+    # 【改善】combined_stopped_flag も毎実行でリセット（状態遷移の明確化）
+    # 次の実行時に新たに判定されるため、保存値は参考値とする
     
     os.makedirs(os.path.dirname(STATE_FILE), exist_ok=True)
     with open(STATE_FILE, "w") as f:
