@@ -17,7 +17,7 @@ from datetime import datetime, timezone, timedelta
 
 ANTHROPIC_API_KEY       = os.environ["ANTHROPIC_API_KEY"]
 MODEL                   = "claude-haiku-4-5-20251001"   # コスト最小・十分な能力
-MAX_TOKENS              = 8192                           # 328行のコードを確実に出力できる量
+MAX_TOKENS              = 16384                          # 500行規模のコードを途中で切らずに出力する余裕を確保
 
 LOG_FILE                = "logs/simulation_log.csv"
 SIMULATOR_FILE          = "src/simulator.py"
@@ -116,7 +116,11 @@ def call_claude(system_prompt: str, user_message: str) -> str:
             stop_reason = data.get("stop_reason", "")
             text = data["content"][0]["text"]
             if stop_reason == "max_tokens":
-                print(f"⚠️  警告: max_tokensに達しました。出力が途中で切れた可能性があります。")
+                # 【安全対策】途中で切れた出力を採用すると壊れたコードを書き込むため、実行を中止する
+                raise RuntimeError(
+                    "出力が max_tokens で途中終了しました。壊れたコードを書き込まないため中止します。"
+                    "（MAX_TOKENS を増やすか、コードを分割してください）"
+                )
             return text
     except urllib.error.HTTPError as e:
         body = e.read().decode("utf-8", errors="replace")
@@ -126,40 +130,85 @@ def call_claude(system_prompt: str, user_message: str) -> str:
 # ── 分析・最適化ロジック ──────────────────────────────────
 
 def parse_response(response: str) -> tuple[str, str]:
-    """ClaudeのレスポンスからANALYSISとCODEを抽出"""
+    """ClaudeのレスポンスからANALYSISとCODEを抽出
+
+    【重要な修正】
+    以前は「最初に見つかった ```python ブロック」を無条件に採用していた。
+    そのため、ANALYSIS の説明文中に置かれた短いスニペット（例: 数行の修正例）を
+    完全な simulator.py と誤認し、本体を数行の断片で上書きして破壊する事故が起きた。
+
+    対策:
+    1. コードは可能な限り「## CODE」セクション以降からのみ抽出する
+       （説明中のスニペットを拾わない）
+    2. 複数のコードブロックがある場合は「最も長いブロック」を採用する
+       （説明用の短い断片ではなく本体を選ぶ）
+    実際に上書きしてよいかの最終判断は validate_new_code() が別途行う。
+    """
 
     # デバッグ用：レスポンス冒頭200文字を表示
     print(f"--- Claude レスポンス冒頭 ---\n{response[:200]}\n---")
 
     # ANALYSIS セクション
     analysis_match = re.search(
-        r"## ANALYSIS\s*(.*?)(?=## CODE|```python|\Z)", response, re.DOTALL
+        r"## ANALYSIS\s*(.*?)(?=## CODE|\Z)", response, re.DOTALL
     )
     analysis = analysis_match.group(1).strip() if analysis_match else "（分析なし）"
 
-    # CODE セクション: ```python ... ``` を探す
-    code_match = re.search(r"```python\s*(.*?)```", response, re.DOTALL)
+    # コード抽出対象の領域を決める：「## CODE」以降があればそこに限定する
+    code_region = response
+    code_header = re.search(r"## CODE\s*(.*)", response, re.DOTALL)
+    if code_header:
+        code_region = code_header.group(1)
 
-    if not code_match:
-        # フォールバック: ``` ... ``` （言語指定なし）
-        code_match = re.search(r"```\s*(.*?)```", response, re.DOTALL)
+    # 領域内の全コードブロックを取得し、最も長いものを採用
+    blocks = re.findall(r"```(?:python)?\s*(.*?)```", code_region, re.DOTALL)
+    if not blocks:
+        # フォールバック：レスポンス全体から全コードブロックを探す
+        blocks = re.findall(r"```(?:python)?\s*(.*?)```", response, re.DOTALL)
 
-    if not code_match:
-        # フォールバック2: ## CODE 以降の全テキストをコードとみなす
-        code_section = re.search(r"## CODE\s*(.*)", response, re.DOTALL)
-        if code_section:
-            code = code_section.group(1).strip()
-            if code.startswith(('"""', 'import', 'def ', '#')):
-                return analysis, code
-
+    if not blocks:
         print(f"--- Claude レスポンス全文 ---\n{response}\n---")
         raise ValueError(
             "Claudeのレスポンスにコードブロックが見つかりませんでした。"
             "上のログでレスポンス全文を確認してください。"
         )
 
-    code = code_match.group(1).strip()
+    # 最も長いブロック = 本体である可能性が高い
+    code = max(blocks, key=len).strip()
     return analysis, code
+
+
+def validate_new_code(new_code: str, old_code: str) -> None:
+    """上書き前の安全ゲート：壊れた／不完全なコードで simulator.py を破壊しないための検査。
+
+    どれか1つでも引っかかったら例外を送出し、書き込みを中止する。
+    """
+    old_lines = len(old_code.splitlines())
+    new_lines = len(new_code.splitlines())
+
+    # (1) 極端に短い出力は破損とみなす（断片の誤取得・途中切れ対策）
+    #     旧コードの半分未満、または 100 行未満なら異常。
+    min_lines = max(100, old_lines // 2)
+    if new_lines < min_lines:
+        raise ValueError(
+            f"新コードが短すぎます（新{new_lines}行 / 旧{old_lines}行、下限{min_lines}行）。"
+            "説明用スニペットの誤取得か出力の途中切れの可能性があるため、上書きを中止します。"
+        )
+
+    # (2) Python構文チェック：構文エラーのあるコードは絶対に書き込まない
+    try:
+        compile(new_code, SIMULATOR_FILE, "exec")
+    except SyntaxError as e:
+        raise ValueError(f"新コードに構文エラーがあります（{e}）。上書きを中止します。")
+
+    # (3) 必須要素の存在チェック：本体の骨格が消えていないか
+    required_tokens = ("def main(", "if __name__", "def load_state(", "def save_state(")
+    missing = [t for t in required_tokens if t not in new_code]
+    if missing:
+        raise ValueError(
+            f"新コードに必須要素が見つかりません: {missing}。"
+            "本体が欠落している可能性があるため、上書きを中止します。"
+        )
 
 
 def summarize_log(csv_content: str) -> str:
@@ -230,9 +279,13 @@ def main():
         append_optimizer_log(log_entry)
         return
 
+    # 【安全ゲート】壊れた／不完全なコードで simulator.py を破壊しないための最終検査
+    # 検査に落ちた場合はここで例外送出 → 書き込み・コミットは一切行われない
+    validate_new_code(new_code, simulator_py)
+
     # simulator.py を上書き
     write_file(SIMULATOR_FILE, new_code + "\n")
-    print(f"simulator.py を更新しました")
+    print(f"simulator.py を更新しました（{len(new_code.splitlines())}行）")
 
     # optimizer_log.md に追記
     log_entry = f"""
