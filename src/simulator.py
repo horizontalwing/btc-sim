@@ -86,7 +86,6 @@ def load_state():
             "combined_position": 0,     # 複合: ポジション（Satoshi単位）
             "combined_pnl": 0,          # 複合: 累計損益（円）
             "combined_entry_price": None,
-            "combined_stopped_flag": False,  # 複合：損切りライン到達フラグ（毎実行時にリセット）
         }
     with open(STATE_FILE) as f:
         loaded = json.load(f)
@@ -110,10 +109,6 @@ def load_state():
     if loaded.get("combined_entry_price") is not None:
         loaded["combined_entry_price"] = int(loaded["combined_entry_price"])
     
-    # stopped_flag の初期化（毎実行時にリセット）
-    if "combined_stopped_flag" not in loaded:
-        loaded["combined_stopped_flag"] = False
-    
     return loaded
 
 
@@ -127,12 +122,10 @@ def save_state(state):
     state["combined_pnl"] = int(state["combined_pnl"])
     state["combined_position"] = int(state["combined_position"])
     
-    # 【修正】stopped フラグは保存しない（毎回実行時に価格で判定）
+    # 【改善】stopped フラグ類は永続化しない（毎回の実行時に価格で判定）
     # これにより損切りラインから回復した場合に自動的に売買が再開される
     state.pop("stopped", None)
-    
-    # 【改善】combined_stopped_flag も毎実行でリセット（状態遷移の明確化）
-    # 次の実行時に新たに判定されるため、保存値は参考値とする
+    state.pop("combined_stopped_flag", None)
     
     os.makedirs(os.path.dirname(STATE_FILE), exist_ok=True)
     with open(STATE_FILE, "w") as f:
@@ -281,16 +274,18 @@ def strategy_ma(price, ma_short, ma_long, state, ts, is_stopped):
         qty_satoshi = prev_position_satoshi  # 保有量を売却
         qty_btc = satoshi_to_btc(qty_satoshi)  # ログ表示用
         
-        entry_price = state["ma_entry_price"] if state["ma_entry_price"] is not None else price
+        entry_price = state.get("ma_entry_price")
+        if entry_price is None:
+            entry_price = price
         entry_price = int(entry_price)  # 【改善】型保証を強化
         
         # 【バグ修正】正確な損益計算
-        # 売却収益 = 売却額
-        # 購入コスト = (エントリー価格 × 数量 / SATOSHI_PER_BTC)
-        # 損益 = 売却額 - 購入コスト
-        revenue = calc_jpy_cost(price, qty_satoshi)  # 売却額（整数演算）
-        cost = calc_jpy_cost(entry_price, qty_satoshi)  # 購入額（整数演算）
-        profit = int(revenue - cost)  # 真の損益
+        # 売却収益（整数演算）
+        revenue = calc_jpy_cost(price, qty_satoshi)
+        # 購入コスト（整数演算、エントリー価格で計算）
+        cost = calc_jpy_cost(entry_price, qty_satoshi)
+        # 実損益 = 売却額 - 購入額
+        profit = int(revenue - cost)
         
         state["ma_pnl"] = int(state["ma_pnl"]) + profit
         state["ma_position"] = 0
@@ -317,8 +312,8 @@ def strategy_combined(price, ma_short, ma_long, state, ts, is_stopped):
     レンジ相場で、かつグリッド条件を満たせば売買実行
     
     【改善点】
-    - レンジ判定閾値を1% → 1.5%に拡大（浮動小数点誤差対策・取引機会増加）
-    - 損切りライン到達時の重複更新を防止（前回状態フラグで一度限り）
+    - stopped_flag を毎回の実行時に計算（永続化しない）
+    - 損切りライン到達時の重複更新を防止（前回の is_stopped 状態に基づく）
     - ゼロ除算保護を追加
     """
     signal = "hold"
@@ -341,26 +336,26 @@ def strategy_combined(price, ma_short, ma_long, state, ts, is_stopped):
 
     if not is_range:
         notes = f"トレンド相場: MA乖離{diff_pct*100:.2f}% → グリッド停止"
-        # 【改善】トレンド判定時は stopped_flag をリセット
-        state["combined_stopped_flag"] = False
         return signal, action, qty_btc, state, notes
 
     # 【改善】損切りライン到達時のみ：基準価格を一度だけリセット
-    # 前回 stopped だったが今回も stopped なら、既に更新済みなのでスキップ
-    prev_stopped = state.get("combined_stopped_flag", False)
-    if is_stopped and not prev_stopped:
-        # 損切りラインに初めて到達した → 基準価格をリセット
-        state["combined_last_price"] = price
-        state["combined_stopped_flag"] = True
-        notes = f"損切りライン到達中: 基準価格を現在値に更新（レンジMA乖離{diff_pct*100:.2f}%）"
+    # 前回の状態を取得（初回実行時は False を仮定）
+    prev_is_stopped = state.get("_prev_is_stopped", False)
+    
+    if is_stopped:
+        if not prev_is_stopped:
+            # 損切りラインに初めて到達した → 基準価格をリセット
+            state["combined_last_price"] = price
+            notes = f"損切りライン到達中: 基準価格を現在値に更新（レンジMA乖離{diff_pct*100:.2f}%）"
+        else:
+            # 既に損切りライン中 → 基準価格の更新はスキップ
+            notes = f"損切りライン到達中: グリッド停止（レンジMA乖離{diff_pct*100:.2f}%）"
+        # 今回の状態を記録（次回判定用、ただし永続化されない）
+        state["_prev_is_stopped"] = True
         return signal, action, qty_btc, state, notes
-    elif is_stopped and prev_stopped:
-        # 既に損切りライン中 → 基準価格の更新はスキップ
-        notes = f"損切りライン到達中: グリッド停止（レンジMA乖離{diff_pct*100:.2f}%）"
-        return signal, action, qty_btc, state, notes
-    else:
-        # 損切りラインから回復 → フラグをリセット
-        state["combined_stopped_flag"] = False
+
+    # 損切りラインから回復 → フラグをリセット
+    state["_prev_is_stopped"] = False
 
     # レンジ相場 → グリッドロジックを適用（combined用state）
     last = state.get("combined_last_price")
@@ -421,7 +416,7 @@ def main():
     # 状態読み込み
     state = load_state()
 
-    # 【修正】停止フラグは毎回の実行時に価格で判定（永続化しない）
+    # 【改善】停止フラグは毎回の実行時に価格で判定（永続化しない）
     # これにより損切りラインから回復した場合に自動的に売買が再開される
     is_stopped = price <= STOP_PRICE_JPY
 
