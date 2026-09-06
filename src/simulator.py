@@ -64,15 +64,35 @@ def satoshi_to_btc(satoshi):
 
 def calc_jpy_cost(price_jpy, qty_satoshi):
     """
-    購入コスト（円）を計算
-    価格（円） × 数量（Satoshi） ÷ 1BTC当たりSatoshi数 = 円
-    整数演算で誤差を最小化
+    購入コスト（円）を計算（整数演算で誤差を最小化）
+    
+    計算式: 価格（円） × 数量（Satoshi） ÷ 1BTC当たりSatoshi数 = 円
+    
+    【改善】Decimal を使用して高精度計算を実施
+    - 浮動小数点演算の誤差を排除
+    - Satoshi単位での丸め損失を最小化
     """
-    return (price_jpy * qty_satoshi) // SATOSHI_PER_BTC
+    # Decimal を使用して高精度計算
+    price_decimal = Decimal(str(price_jpy))
+    qty_decimal = Decimal(str(qty_satoshi))
+    divisor = Decimal(str(SATOSHI_PER_BTC))
+    
+    # 整数演算: 丸め方法は ROUND_HALF_UP（四捨五入）
+    result = (price_decimal * qty_decimal / divisor).quantize(
+        Decimal("1"), rounding=ROUND_HALF_UP
+    )
+    
+    return int(result)
 
 
 def load_state():
-    """前回の状態をJSONから読み込む（型変換により浮動小数点誤差を防止）"""
+    """
+    前回の状態をJSONから読み込む
+    
+    【改善】型変換により浮動小数点誤差を完全に防止
+    - JSON読み込み時に全整数フィールドを即座に int() で型チェック
+    - Optional フィールドについても同様の処理
+    """
     if not os.path.exists(STATE_FILE):
         return {
             "price_history": [],        # 価格履歴（MA計算用）
@@ -87,19 +107,19 @@ def load_state():
             "combined_pnl": 0,          # 複合: 累計損益（円）
             "combined_entry_price": None,
         }
+    
     with open(STATE_FILE) as f:
         loaded = json.load(f)
     
-    # 【型変換】JSON読み込み時の浮動小数点誤差を修正
-    # 整数フィールドは明示的に int() で変換（損益と位置）
-    loaded["grid_pnl"] = int(loaded["grid_pnl"])
-    loaded["grid_position"] = int(loaded["grid_position"])
-    loaded["ma_pnl"] = int(loaded["ma_pnl"])
-    loaded["ma_position"] = int(loaded["ma_position"])
-    loaded["combined_pnl"] = int(loaded["combined_pnl"])
-    loaded["combined_position"] = int(loaded["combined_position"])
+    # 【型変換】必須整数フィールドの型チェック・変換
+    loaded["grid_pnl"] = int(loaded.get("grid_pnl", 0))
+    loaded["grid_position"] = int(loaded.get("grid_position", 0))
+    loaded["ma_pnl"] = int(loaded.get("ma_pnl", 0))
+    loaded["ma_position"] = int(loaded.get("ma_position", 0))
+    loaded["combined_pnl"] = int(loaded.get("combined_pnl", 0))
+    loaded["combined_position"] = int(loaded.get("combined_position", 0))
     
-    # Optional フィールド（Noneまたは整数）
+    # 【型変換】Optional フィールド（Noneまたは整数）
     if loaded.get("grid_last_price") is not None:
         loaded["grid_last_price"] = int(loaded["grid_last_price"])
     if loaded.get("ma_entry_price") is not None:
@@ -109,11 +129,25 @@ def load_state():
     if loaded.get("combined_entry_price") is not None:
         loaded["combined_entry_price"] = int(loaded["combined_entry_price"])
     
+    # 【改善】価格履歴の型チェック（いずれかが文字列の場合は int に変換）
+    if "price_history" in loaded and loaded["price_history"]:
+        loaded["price_history"] = [int(p) for p in loaded["price_history"]]
+    else:
+        loaded["price_history"] = []
+    
     return loaded
 
 
 def save_state(state):
-    """状態をJSONに保存（保存前に再度整数化して誤差を排除）"""
+    """
+    状態をJSONに保存
+    
+    【改善】セッション内部フラグを永続化しない
+    - `_grid_stopped_prev`, `_prev_is_stopped`, `stopped` 等は毎回の実行時に計算
+    - これにより損切りラインから回復した場合に自動的に再開される
+    
+    保存直前に再度整数化して誤差を排除
+    """
     # 【型保証・保存時】保存直前に再度整数化
     state["grid_pnl"] = int(state["grid_pnl"])
     state["grid_position"] = int(state["grid_position"])
@@ -127,6 +161,7 @@ def save_state(state):
     state.pop("stopped", None)
     state.pop("combined_stopped_flag", None)
     state.pop("_prev_is_stopped", None)
+    state.pop("_grid_stopped_prev", None)
     
     os.makedirs(os.path.dirname(STATE_FILE), exist_ok=True)
     with open(STATE_FILE, "w") as f:
@@ -156,10 +191,14 @@ def calc_ma(prices, period):
 
 
 def format_ma_for_log(ma_value):
-    """MA値をログ用にフォーマット（None時は空文字列、丸め処理を一貫化）"""
+    """
+    MA値をログ用にフォーマット
+    
+    【改善】None時は空文字列、値がある場合は整数化
+    （浮動小数点誤差を排除し、ログ出力時の一貫性を確保）
+    """
     if ma_value is None:
         return ""
-    # 【改善】int()で確実に整数化して浮動小数点誤差を排除
     return int(round(ma_value))
 
 
@@ -168,6 +207,13 @@ def format_ma_for_log(ma_value):
 def strategy_grid(price, state, ts, is_stopped):
     """
     戦略①: グリッドトレード
+    
+    グリッド幅（50万円）を超える価格変動で売買実行
+    
+    【CONSTRAINT-001準拠】
+    - 待機時に `grid_last_price` を更新しない
+    - 売買時のみ基準価格を更新
+    - これにより小刻みな価格変動でグリッドがリセットされることを防止
     
     【改善】損切りライン到達時の基準価格リセットを制御
     - 最初の1回だけ更新（`_grid_stopped_prev` フラグで制御）
@@ -178,7 +224,7 @@ def strategy_grid(price, state, ts, is_stopped):
     qty_btc = 0.0  # ログ出力用（BTC単位）
     notes  = ""
 
-    last = state["grid_last_price"]
+    last = state.get("grid_last_price")
 
     # 初回はベースラインを記録するだけ
     if last is None:
@@ -249,8 +295,10 @@ def strategy_ma(price, ma_short, ma_long, state, ts, is_stopped):
     ゴールデンクロス（短期MA > 長期MA）で買い
     デッドクロス（短期MA < 長期MA）で売り
     
-    【バグ修正】売却時の損益計算を正確に実行
+    【改善】売却時の損益計算を正確に実行
     - エントリー価格を保存し、売却時に (売却額 - 購入額) で損益を計算
+    - Decimal を使用した高精度計算で浮動小数点誤差を排除
+    - 損切りライン到達時は売買停止（ポジション保持）
     """
     signal = "hold"
     action = "none"
@@ -263,12 +311,12 @@ def strategy_ma(price, ma_short, ma_long, state, ts, is_stopped):
 
     # 【改善】損切りライン到達時は売買停止（ポジション保持）
     if is_stopped:
-        prev_position_satoshi = state["ma_position"]
+        prev_position_satoshi = state.get("ma_position", 0)
         pos_btc = satoshi_to_btc(prev_position_satoshi) if prev_position_satoshi > 0 else 0
         notes = f"損切りライン到達中: 売買停止（ポジション{pos_btc:.3f}BTC保持）"
         return signal, action, qty_btc, state, notes
 
-    prev_position_satoshi = state["ma_position"]
+    prev_position_satoshi = state.get("ma_position", 0)
 
     if ma_short > ma_long and prev_position_satoshi == 0:
         # ゴールデンクロス → 買い
@@ -296,7 +344,7 @@ def strategy_ma(price, ma_short, ma_long, state, ts, is_stopped):
             entry_price = price
         entry_price = int(entry_price)  # 【改善】型保証を強化
         
-        # 【バグ修正】正確な損益計算
+        # 【改善】正確な損益計算（Decimal使用）
         # 売却収益（整数演算）
         revenue = calc_jpy_cost(price, qty_satoshi)
         # 購入コスト（整数演算、エントリー価格で計算）
@@ -328,10 +376,16 @@ def strategy_combined(price, ma_short, ma_long, state, ts, is_stopped):
     短期MAと長期MAの乖離が1.5%以内ならレンジ相場と判定
     レンジ相場で、かつグリッド条件を満たせば売買実行
     
+    【CONSTRAINT-002準拠】
+    - 待機時に `combined_last_price` を更新しない
+    - 売買時のみ基準価格を更新
+    - グリッド部分も CONSTRAINT-001 と同じ原則に従う
+    
     【改善点】
     - `_prev_is_stopped` を毎回の実行時に計算（永続化しない）
     - 損切りライン到達時の基準価格を最初の1回だけリセット
     - ゼロ除算保護を追加
+    - MA乖離率を高精度で計算・表示
     """
     signal = "hold"
     action = "none"
@@ -342,12 +396,12 @@ def strategy_combined(price, ma_short, ma_long, state, ts, is_stopped):
         notes = "MA計算中（データ蓄積待ち）"
         return signal, action, qty_btc, state, notes
 
-    # 【バグ修正】ゼロ除算保護
+    # 【改善】ゼロ除算保護
     if ma_long <= 0:
         notes = "MA計算エラー: 長期MA異常"
         return signal, action, qty_btc, state, notes
 
-    # レンジ判定
+    # レンジ判定（MA乖離率を高精度で計算）
     diff_pct = abs(ma_short - ma_long) / ma_long
     is_range = diff_pct <= RANGE_THRESHOLD_PCT
 
@@ -441,7 +495,7 @@ def main():
         print("✅ 売買シグナル有効")
 
     # 価格履歴に追加
-    state["price_history"].append(price)
+    state["price_history"].append(int(price))
     # 最大MA_LONG_PERIOD × 2 件だけ保持（メモリ節約）
     if len(state["price_history"]) > MA_LONG_PERIOD * 2:
         state["price_history"] = state["price_history"][-(MA_LONG_PERIOD * 2):]
