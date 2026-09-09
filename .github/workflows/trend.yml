@@ -1,0 +1,41 @@
+name: BTC Trend Paper Trade (daily)
+
+# 日足トレンド追随の紙トレードを1日1回実行し、ログをコミットする。
+# 実際の注文は出さない（安全）。旧simulate.yml / optimize.yml は無効化して本ワークフローに一本化する。
+
+on:
+  schedule:
+    - cron: "15 15 * * *"   # 毎日 00:15 JST（= 前日15:15 UTC）
+  workflow_dispatch:          # 手動実行も可
+
+permissions:
+  contents: write
+
+concurrency:
+  group: trend-paper
+  cancel-in-progress: false
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Run trend paper trade
+        run: python src/trend_paper.py
+
+      - name: Commit logs
+        run: |
+          git config user.name  "btc-trend-bot"
+          git config user.email "btc-trend-bot@users.noreply.github.com"
+          git add logs/trend_log.csv logs/trend_state.json
+          if git diff --staged --quiet; then
+            echo "変更なし（本日分は記録済み等）"
+          else
+            git commit -m "trend: $(date -u +%Y-%m-%dT%H:%MZ) paper-trade log"
+            git push
+          fi
